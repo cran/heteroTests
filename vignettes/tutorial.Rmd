@@ -1,0 +1,51 @@
+---
+title: "heteroTests Walkthrough"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{heteroTests Walkthrough}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(heteroTests)
+```
+
+This vignette demonstrates the main workflow in greater depth. We use R's
+built-in `quakes` dataset.
+
+```{r}
+head(quakes)
+```
+
+## 1. Fit an initial model
+
+```{r}
+base_model <- lm(stations ~ mag + depth, data = quakes)
+summary(base_model)
+```
+
+## 2. Diagnose heteroscedasticity
+
+```{r}
+hd <- HeteroDiagnostic(base_model, quakes)
+test(hd)
+plot(hd)
+```
+
+## 3. Apply a remedy
+
+```{r}
+wls_model <- fitWLS(base_model)
+summary(wls_model)
+```
+
+## 4. Compare models
+
+```{r}
+compareModelDiagnostics(list(base_model, wls_model))
+```
+
+The weighted least squares fit typically reduces the heteroscedasticity metrics.
+
+

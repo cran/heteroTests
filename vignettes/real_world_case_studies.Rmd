@@ -1,0 +1,222 @@
+---
+title: "Real-world Case Studies"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Real-world Case Studies}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(heteroTests)
+library(ggplot2)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This vignette illustrates how to incorporate heteroTests into real analyses.
+Each case study follows a workflow of model specification, diagnostic testing,
+visualisation, and interpretation.
+
+## Case study 1: Seismic station counts
+
+R's built-in `quakes` dataset records 1,000 seismic events near Fiji. We
+regress the number of reporting stations on event magnitude and depth, and
+inspect the residual dispersion. The response is a count, so its variance is
+expected to rise with its mean.
+
+```{r}
+quakes_model <- lm(stations ~ mag + depth, data = quakes)
+summary(quakes_model)
+```
+
+Formal diagnostics flag heteroscedasticity consistent with the classical
+literature on this dataset.
+
+```{r}
+white_q <- performWhiteTest(quakes_model, quakes)
+bp_q <- performBPTest(quakes_model, quakes)
+koenker_q <- performKoenkerTest(quakes_model, quakes)
+list(White = white_q, Breusch_Pagan = bp_q, Koenker = koenker_q)
+```
+
+```{r fig.width=6, fig.height=4}
+plot_data <- data.frame(
+  fitted = fitted(quakes_model),
+  residual = resid(quakes_model),
+  mag = quakes$mag
+)
+
+ggplot(plot_data, aes(x = fitted, y = residual, colour = mag)) +
+  geom_point(alpha = 0.7) +
+  scale_colour_viridis_c(option = "C") +
+  geom_smooth(se = FALSE, colour = "black") +
+  labs(
+    x = "Fitted values",
+    y = "Residuals",
+    colour = "mag",
+    title = "Heteroscedasticity in reported station counts"
+  ) +
+  theme_minimal()
+```
+
+*Interpretation.* All three tests reject homoskedasticity. The residual plot
+reveals wider dispersion at higher predicted counts and for events of larger
+`mag`. Weighted least squares is a common
+remedy.
+
+```{r}
+wls_q <- fitWLS(quakes_model)
+
+# Compare like with like: the residual variance across thirds of the fitted
+# range, unweighted for OLS and weighted for WLS.
+third <- cut(fitted(quakes_model), 3, labels = c("low", "mid", "high"))
+rbind(
+  OLS_resid_var = round(tapply(residuals(quakes_model)^2, third, mean), 1),
+  WLS_weighted_resid_var = round(
+    tapply((residuals(wls_q) * sqrt(weights(wls_q)))^2, third, mean), 3))
+```
+
+The unweighted variance climbs steeply across the fitted range -- a 6.6-fold
+spread -- which is the heteroscedasticity the tests detected. Weighting cuts
+that to roughly 3-fold: a real improvement, and not a complete one, because the
+variance model is an approximation rather than the truth.
+
+`fitWLS()` estimates the weights by regressing `log(e^2)` on the model's design
+matrix and inverting the fitted variance, so the flattening above reflects the
+data rather than the arithmetic. That has been true only since 0.9.0; before
+then the weights were the raw inverse squared residuals, which put almost all
+the weight on a handful of well-fitted points and made standard errors from the
+fit unusable. For a count response like this one, a quasi-Poisson GLM models the
+mean-variance link directly and is worth comparing against.
+
+## Case study 2: Income volatility in simulated survey data
+
+The `hetero_data` sample mimics survey responses with variance inflation driven
+by the regressor `x`.
+
+```{r}
+data(hetero_data, package = "heteroTests")
+survey_model <- lm(y ~ x, data = hetero_data)
+summary(survey_model)
+```
+
+`HeteroDiagnostic()` orchestrates multiple tests and visualisations.
+
+```{r}
+survey_diag <- HeteroDiagnostic(survey_model, hetero_data)
+test(survey_diag, tests = c("white", "breusch_pagan"))
+performGlejserTest(survey_model, hetero_data, "x")
+```
+
+```{r fig.width=6, fig.height=4}
+plot(survey_diag, plots = c("spread_level"))
+```
+
+*Interpretation.* Glejser's test and the scale-location plot both indicate that
+variance increases with `x`. Depending on the modelling goal, analysts might log
+transform the response or model the variance explicitly (e.g. via `lm` weights
+or `glm` with a variance function).
+
+## Case study 3: Engineering reliability assessment
+
+The `diagnostic_data` dataset contains correlated predictors representing
+engineering stress measures. Nonlinear effects and multicollinearity can mask
+heteroscedasticity. We run the broader diagnostic suite to capture interactions
+between variance and structure checks.
+
+```{r}
+data(diagnostic_data, package = "heteroTests")
+diagnostic_ext <- transform(diagnostic_data, x1_sq = x1^2)
+engineering_model <- lm(y ~ x1 + x1_sq + x2, data = diagnostic_ext)
+engineer_results <- runDiagnostics(engineering_model, diagnostic_ext,
+  tests = c("breusch_pagan", "koenker")
+)
+safe_htest <- function(fn, method) {
+  tryCatch(
+    fn(),
+    error = function(e) {
+      message(method, " unavailable: ", e$message)
+      structure(
+        list(
+          statistic = c(statistic = NA_real_),
+          parameter = NA_real_,
+          p.value = NA_real_,
+          method = paste0(method, " (failed)"),
+          data.name = deparse(stats::formula(engineering_model))
+        ),
+        class = "htest"
+      )
+    }
+  )
+}
+white_engineering <- safe_htest(
+  function() performWhiteTest(engineering_model, diagnostic_ext, cross_products = FALSE),
+  "White test"
+)
+bp_engineering <- safe_htest(
+  function() performBPTest(engineering_model, diagnostic_ext),
+  "Breusch-Pagan test"
+)
+koenker_engineering <- safe_htest(
+  function() performKoenkerTest(engineering_model, diagnostic_ext),
+  "Koenker test"
+)
+harvey_engineering <- safe_htest(
+  function() performHarveyTest(engineering_model),
+  "Harvey test"
+)
+engineer_tests <- list(
+  white = white_engineering,
+  breusch_pagan = bp_engineering,
+  koenker = koenker_engineering,
+  harvey = harvey_engineering
+)
+engineer_tests
+```
+
+The heteroscedasticity tests disagree, so we inspect the accompanying
+multicollinearity and RESET diagnostics.
+
+```{r}
+engineer_results$vif
+engineer_results$reset
+```
+
+Finally, we consolidate $p$-values to visualise which tests detect variance
+instability.
+
+```{r fig.width=6, fig.height=4}
+pvals <- sapply(engineer_tests, function(x) x$p.value)
+pval_df <- data.frame(
+  test = names(pvals),
+  p_value = as.numeric(pvals)
+)
+
+ggplot(pval_df, aes(x = reorder(test, p_value), y = p_value)) +
+  geom_col(fill = "#0072B2", alpha = 0.8) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", colour = "#D55E00") +
+  coord_cartesian(ylim = c(0, 1)) +
+  coord_flip() +
+  labs(
+    x = "Test",
+    y = "p-value",
+    title = "Contrasting heteroscedasticity diagnostics"
+  ) +
+  theme_minimal()
+```
+
+*Interpretation.* Koenker's robust variant is conservative in this moderate
+sample, whereas White's omnibus test remains sensitive to nonlinear variance.
+The RESET test also signals functional-form misspecification, suggesting that a
+variance stabilising transformation or spline terms could stabilise the error
+variance while addressing nonlinearity.
+
+## Summary
+
+Across the three scenarios, heteroTests streamlines workflows by combining
+statistical theory with practical diagnostics. The package encourages analysts to
+inspect residual plots alongside formal tests and to validate remedies such as
+weighted least squares or variance modelling.

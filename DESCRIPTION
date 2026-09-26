@@ -1,0 +1,45 @@
+Package: heteroTests
+Title: Heteroscedasticity Diagnostics for Linear Models
+Version: 0.11.2
+Authors@R: person("Diogo", "Ribeiro", email = "dfr@esmad.ipp.pt",
+    role = c("aut", "cre"),
+    comment = c(ORCID = "0009-0001-2022-7072"))
+Description: Provides a unified set of heteroscedasticity diagnostics for
+    linear-model workflows. It implements classical auxiliary-regression
+    tests, including those of White (1980) <doi:10.2307/1912934>, Breusch
+    and Pagan (1979) <doi:10.2307/1911963>, Koenker (1981)
+    <doi:10.1016/0304-4076(81)90062-2>, Goldfeld and Quandt (1965)
+    <doi:10.1080/01621459.1965.10480811> and Harvey (1976)
+    <doi:10.2307/1913974>; the score test of Cook and Weisberg (1983)
+    <doi:10.1093/biomet/70.1.1>; the ARCH test of Engle (1982)
+    <doi:10.2307/1912773>; and group-wise tests of equal variance, including
+    those of Bartlett (1937) <doi:10.1098/rspa.1937.0109>, Brown and Forsythe
+    (1974) <doi:10.1080/01621459.1974.10482955> and Hartley (1950)
+    <doi:10.2307/2332383>. Resampling and scalable variants, simulation
+    utilities, diagnostic visualisation and remediation helpers share a
+    consistent interface designed for reproducible statistical workflows and
+    integration with common modelling tools.
+License: Apache License (>= 2.0)
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.3
+Depends: R (>= 4.1)
+Imports: MASS, stats, ggplot2, curl, generics, scales, R6, parallel,
+        SuppDists
+Suggests: quickcheck, testthat (>= 3.0.0), styler, lintr, digest, covr,
+        knitr, rmarkdown, gridExtra, shiny, DT, plotly, htmlwidgets,
+        readxl, Matrix, bench, lmtest, plm, withr, car, vartest, mgcv,
+        quantreg, sandwich, spdep, broom, workflows, parsnip, recipes,
+        survey, data.table, dtplyr, dplyr
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+URL: https://github.com/DiogoRibeiro7/heteroTests,
+        https://diogoribeiro7.github.io/heteroTests/
+BugReports: https://github.com/DiogoRibeiro7/heteroTests/issues
+NeedsCompilation: no
+Packaged: 2026-09-15 16:55:05 UTC; runner
+Author: Diogo Ribeiro [aut, cre] (ORCID:
+    <https://orcid.org/0009-0001-2022-7072>)
+Maintainer: Diogo Ribeiro <dfr@esmad.ipp.pt>
+Repository: CRAN
+Date/Publication: 2026-09-26 16:50:16 UTC

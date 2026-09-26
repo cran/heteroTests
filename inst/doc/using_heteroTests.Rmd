@@ -1,0 +1,171 @@
+---
+title: "Using heteroTests"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Using heteroTests}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#")
+```
+
+The **heteroTests** package provides several classical tests for detecting heteroscedasticity in linear models.
+
+```{r example}
+library(heteroTests)
+
+# Fit a simple linear model on real data
+model <- lm(stations ~ mag + depth, data = quakes)
+# A second dataset demonstrates collinearity and mild nonlinearity
+data(diagnostic_data)
+diag_model <- lm(y ~ x1 + x2, data = diagnostic_data)
+
+# Run White's test and get an htest object
+performWhiteTest(model, quakes)
+performWhiteTest(diag_model, diagnostic_data)
+```
+
+## Other available tests
+
+Many additional diagnostics follow the same interface and also return an
+`htest` object.
+
+```{r more-tests}
+# Breusch-Pagan and its robust Koenker version. The data argument must be
+# the data the model was fitted on.
+performBPTest(model, quakes)
+performKoenkerTest(model, quakes)
+
+# Group-based tests need a grouping factor in that same data
+quakes_grouped <- quakes
+quakes_grouped$depth_band <- cut(quakes_grouped$depth, 3,
+                                 labels = c("shallow", "mid", "deep"))
+performLeveneTest(model, quakes_grouped, "depth_band")
+
+# ARCH effects in time series
+performArchLMTest(model, lags = 2)
+```
+
+Several diagnostics can also be run together.
+
+```{r run-many}
+# Alternatively run multiple tests at once
+runHeteroTests(model, quakes)
+# Choose a subset of diagnostics
+runHeteroTests(model, quakes, tests = c("white", "koenker", "ncv"))
+runDiagnostics(model, quakes)
+```
+
+Remediation helpers operate on the fitted model directly.
+
+```{r remediation}
+fitWLS(model)
+fitRobust(model)
+autoTransform(model)
+```
+
+See the package README for a complete list of implemented tests.
+
+## Earthquake station-count example
+
+R's built-in `quakes` dataset records 1,000 seismic events near Fiji. We can run the diagnostics and attempt a remedial fit on this real-world data.
+
+```{r quakes-example}
+quakes_model <- lm(stations ~ mag + depth, data = quakes)
+runDiagnostics(quakes_model, quakes)
+fitWLS(quakes_model)
+```
+
+## Theophylline dosing example
+
+The `Theoph` dataset from base R contains blood concentration measures after
+a single dose. Diagnostics reveal heteroscedasticity and let us visualise
+the residual spread.
+
+```{r theoph-example}
+data(Theoph, package = "datasets")
+dose_model <- lm(conc ~ Time, data = Theoph)
+performWhiteTest(dose_model, Theoph)
+plot(HeteroDiagnostic(dose_model, Theoph))
+```
+
+## Step-by-step workflow
+
+This short example shows how to detect heteroscedasticity, choose a remedy and re-test the model.
+
+```{r step-by-step}
+hd <- HeteroDiagnostic(stations ~ mag + depth, quakes)
+test(hd)
+
+wls_model <- fitWLS(hd$model)
+
+# Re-test after remedy
+test(HeteroDiagnostic(wls_model, quakes))
+```
+
+The drop in test statistics or diagnostic plots indicates whether the remedy helped.
+
+## Statistical Accuracy and Validation
+
+The `heteroTests` package implementations have been validated against:
+
+- **Original published papers** with known test cases
+- **Established R packages** (lmtest, car, stats)  
+- **Commercial software** results (Stata, EViews)
+- **Simulation studies** with known statistical properties
+
+### Cross-Package Validation
+
+```{r validation-example}
+# Compare our Breusch-Pagan test with lmtest
+library(lmtest)
+data(mtcars)
+model <- lm(mpg ~ wt + hp, data = mtcars)
+
+# Our implementation
+our_result <- performBreuschPaganTest(model, mtcars)
+
+# Reference implementation
+ref_result <- bptest(model)
+
+# Results should match
+print(paste("Our statistic:", round(our_result$statistic, 6)))
+print(paste("Reference statistic:", round(ref_result$statistic, 6)))
+```
+
+## Performance and Memory Considerations
+
+### Large Datasets
+
+The `heteroTests` package is designed to handle datasets of various sizes, but some considerations apply:
+
+- **Memory warnings**: Functions will warn when processing large datasets (>50MB)
+- **Computational time**: Some tests (White, Breusch-Pagan) can be slow on very large datasets
+- **Memory usage**: Peak memory usage is typically 2-3x the dataset size
+
+### Recommendations for Large Datasets
+
+```{r performance-tips, eval=FALSE}
+# Illustrative only: `your_data` stands for your own data frame, so this
+# chunk is not evaluated when the vignette is built.
+
+# 1. Subset for initial exploration
+large_subset <- your_data[sample(nrow(your_data), 1000), ]
+quick_result <- performWhiteTest(model, large_subset)
+
+# 2. Use simpler tests first
+fast_result <- performGQTest(model, your_data, order_by = "x1")
+
+# 3. Monitor memory usage
+gc()  # Garbage collection before analysis
+result <- performWhiteTest(model, your_data)
+gc()  # Clean up after
+```
+
+### Memory Management Tips
+
+- Use `gc()` to free memory between analyses
+- Consider processing data in chunks for very large datasets
+- Close unused objects with `rm()` to free memory

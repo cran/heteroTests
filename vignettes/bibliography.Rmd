@@ -1,0 +1,26 @@
+---
+title: "Complete Bibliography and References"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Complete Bibliography and References}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+library(heteroTests)
+```
+
+The full reference list for the diagnostics implemented in this package is
+maintained as the help topic `?algorithms_bibliography`, which collects the
+primary source for every test. The package citation is below.
+
+```{r}
+citation("heteroTests")
+```
+
+To read the complete bibliography from an R session:
+
+```{r eval=FALSE}
+?algorithms_bibliography
+```

@@ -1,0 +1,103 @@
+## ----setup, include=FALSE-----------------------------------------------------
+library(heteroTests)
+library(ggplot2)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+set.seed(2024)
+
+## -----------------------------------------------------------------------------
+generate_sample <- function(n = 180, scenario = c("homoskedastic", "linear", "clustered")) {
+  scenario <- match.arg(scenario)
+  x1 <- rnorm(n)
+  x2 <- 0.5 * x1 + rnorm(n)
+  if (scenario == "homoskedastic") {
+    errors <- rnorm(n, sd = 1)
+  } else if (scenario == "linear") {
+    errors <- rnorm(n, sd = 1 + 1.5 * abs(x1))
+  } else {
+    regime <- rbinom(n, 1, 0.5)
+    sds <- ifelse(regime == 1, 2.5, 1)
+    errors <- rnorm(n, sd = sds)
+  }
+  y <- 1 + 2 * x1 + 3 * x2 + errors
+  data.frame(y = y, x1 = x1, x2 = x2)
+}
+
+## -----------------------------------------------------------------------------
+safe_pvalue <- function(fn) {
+  res <- tryCatch(fn(), error = function(e) NULL)
+  if (is.null(res) || is.null(res$p.value)) {
+    NA_real_
+  } else {
+    res$p.value
+  }
+}
+
+run_diagnostics_once <- function(data) {
+  model <- lm(y ~ x1 + x2, data = data)
+  c(
+    white = safe_pvalue(function() performWhiteTest(model, data)),
+    breusch_pagan = safe_pvalue(function() performBPTest(model, data)),
+    koenker = safe_pvalue(function() performKoenkerTest(model, data)),
+    harvey = safe_pvalue(function() performHarveyTest(model))
+  )
+}
+
+## -----------------------------------------------------------------------------
+run_simulation <- function(scenario, reps = 200) {
+  replicate(reps, run_diagnostics_once(generate_sample(scenario = scenario)), simplify = "matrix")
+}
+
+calc_rejection_rate <- function(result_matrix, alpha = 0.05) {
+  rowMeans(result_matrix < alpha, na.rm = TRUE)
+}
+
+## -----------------------------------------------------------------------------
+type1_matrix <- run_simulation("homoskedastic")
+type1_rates <- calc_rejection_rate(type1_matrix)
+type1_rates
+
+## ----fig.width=6, fig.height=4------------------------------------------------
+type1_df <- data.frame(
+  test = names(type1_rates),
+  rate = as.numeric(type1_rates),
+  scenario = "Type I error"
+)
+
+ggplot(type1_df, aes(x = reorder(test, rate), y = rate)) +
+  geom_col(fill = "#009E73", alpha = 0.85) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", colour = "#D55E00") +
+  coord_cartesian(ylim = c(0, 0.15)) +
+  coord_flip() +
+  labs(
+    x = "Test",
+    y = "Empirical rejection rate",
+    title = "Observed Type I error at 5% nominal level"
+  ) +
+  theme_minimal()
+
+## -----------------------------------------------------------------------------
+linear_matrix <- run_simulation("linear")
+cluster_matrix <- run_simulation("clustered")
+linear_rates <- calc_rejection_rate(linear_matrix)
+cluster_rates <- calc_rejection_rate(cluster_matrix)
+
+## ----fig.width=7, fig.height=4.5----------------------------------------------
+power_df <- rbind(
+  data.frame(test = names(linear_rates), rate = as.numeric(linear_rates), scenario = "Linear variance"),
+  data.frame(test = names(cluster_rates), rate = as.numeric(cluster_rates), scenario = "Clustered variance")
+)
+
+ggplot(power_df, aes(x = test, y = rate, fill = scenario)) +
+  geom_col(position = "dodge", alpha = 0.85) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "Test",
+    y = "Detection probability",
+    fill = "Scenario",
+    title = "Empirical power across variance alternatives"
+  ) +
+  theme_minimal()
+
