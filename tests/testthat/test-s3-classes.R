@@ -73,12 +73,12 @@ test_that("HeteroDiagnostic test method works with defaults", {
   test_obj <- create_test_model()
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
-  result <- test(hd)
-  expect_valid_diagnostic_result(result, c("white", "breusch_pagan"))
-  
+  result <- without_deprecation(test(hd))
+  expect_valid_diagnostic_result(result, c("white", "koenker"))
+
   # Each result should be an htest object
   expect_htest(result$white)
-  expect_htest(result$breusch_pagan)
+  expect_htest(result$koenker)
 })
 
 test_that("HeteroDiagnostic test method works with custom tests", {
@@ -86,16 +86,16 @@ test_that("HeteroDiagnostic test method works with custom tests", {
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
   # Test with specific tests
-  result <- test(hd, tests = c("white", "koenker"))
+  result <- without_deprecation(test(hd, tests = c("white", "koenker")))
   expect_valid_diagnostic_result(result, c("white", "koenker"))
   
   # Test with single test
-  result_single <- test(hd, tests = "white")
+  result_single <- without_deprecation(test(hd, tests = "white"))
   expect_valid_diagnostic_result(result_single, "white")
   
   # Test with many tests
-  many_tests <- c("white", "breusch_pagan", "koenker", "cook_weisberg", "ncv")
-  result_many <- test(hd, tests = many_tests)
+  many_tests <- c("white", "breusch_pagan", "koenker", "cook_weisberg")
+  result_many <- without_deprecation(test(hd, tests = many_tests))
   expect_valid_diagnostic_result(result_many, many_tests)
 })
 
@@ -105,12 +105,12 @@ test_that("HeteroDiagnostic test method handles invalid tests", {
   
   # Should error for unknown tests
   expect_error(
-    test(hd, tests = "nonexistent_test"),
+    without_deprecation(test(hd, tests = "nonexistent_test")),
     "Unknown tests.*nonexistent_test"
   )
   
   expect_error(
-    test(hd, tests = c("white", "invalid_test")),
+    without_deprecation(test(hd, tests = c("white", "invalid_test"))),
     "Unknown tests.*invalid_test"
   )
 })
@@ -176,7 +176,7 @@ test_that("HeteroDiagnostic summary method works", {
   # Should contain an entry for each requested test; names may be suffixed with
   # the statistic (e.g. "white.X-squared") and structural diagnostics are added
   expect_true(any(grepl("^white", names(summ))))
-  expect_true(any(grepl("^breusch_pagan", names(summ))))
+  expect_true(any(grepl("^koenker", names(summ))))
 
   # All values should be numeric
   expect_true(all(is.numeric(summ)))
@@ -187,11 +187,11 @@ test_that("HeteroDiagnostic summary method works with custom tests", {
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
   # Test with custom tests
-  summ <- summary(hd, tests = c("white", "koenker", "ncv"))
+  summ <- summary(hd, tests = c("white", "koenker", "cook_weisberg"))
   expect_type(summ, "double")
   expect_true(any(grepl("^white", names(summ))))
   expect_true(any(grepl("^koenker", names(summ))))
-  expect_true(any(grepl("^ncv", names(summ))))
+  expect_true(any(grepl("^cook_weisberg", names(summ))))
 })
 
 test_that("HeteroDiagnostic summary handles missing statistics gracefully", {
@@ -212,7 +212,7 @@ test_that("test generic function works correctly", {
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
   # Should dispatch to the registered S3 method (not exported, so look it up)
-  result1 <- test(hd)
+  result1 <- without_deprecation(test(hd))
   result2 <- getS3method("test", "HeteroDiagnostic")(hd)
 
   expect_equal(result1, result2)
@@ -223,7 +223,7 @@ test_that("test generic works with ellipsis arguments", {
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
   # Should pass additional arguments correctly
-  result <- test(hd, tests = c("white", "koenker"))
+  result <- without_deprecation(test(hd, tests = c("white", "koenker")))
   expect_valid_diagnostic_result(result, c("white", "koenker"))
 })
 
@@ -231,16 +231,25 @@ test_that("test generic works with ellipsis arguments", {
 # =============================================================================
 
 test_that("HeteroDiagnostic works with glm objects", {
-  # Create a GLM model
-  glm_model <- glm(vs ~ wt + hp, data = mtcars, family = binomial)
-  
-  hd <- HeteroDiagnostic(glm_model, mtcars)
+  # A Gaussian glm with the identity link is a least-squares fit, and the
+  # diagnostics run on it.
+  gaussian_glm <- glm(mpg ~ wt + hp, data = mtcars)
+  hd <- HeteroDiagnostic(gaussian_glm, mtcars)
   expect_s3_class(hd, "HeteroDiagnostic")
   expect_s3_class(hd$model, "glm")
-  
-  # Basic functionality should work
-  result <- test(hd, tests = "white")  # Not all tests may work with GLM
+  result <- without_deprecation(test(hd, tests = "white"))
   expect_type(result, "list")
+
+  # A glm of another family can be stored, but since 0.15.0 the tests refuse
+  # it: its residuals have a variance that depends on the mean by
+  # construction.
+  glm_model <- glm(vs ~ wt + hp, data = mtcars, family = binomial)
+  hd_binomial <- HeteroDiagnostic(glm_model, mtcars)
+  expect_s3_class(hd_binomial, "HeteroDiagnostic")
+  expect_error(
+    without_deprecation(test(hd_binomial, tests = "white")),
+    "needs a model fitted by stats::lm\\(\\)"
+  )
 })
 
 test_that("HeteroDiagnostic preserves model attributes", {
@@ -267,7 +276,7 @@ test_that("HeteroDiagnostic works with different data structures", {
   expect_s3_class(hd, "HeteroDiagnostic")
   
   # Should be able to run some tests
-  result <- test(hd, tests = "white")
+  result <- without_deprecation(test(hd, tests = "white"))
   expect_htest(result$white)
 })
 
@@ -279,8 +288,8 @@ test_that("HeteroDiagnostic methods are consistent", {
   hd <- HeteroDiagnostic(test_obj$model, test_obj$data)
   
   # Test results should be consistent across calls
-  result1 <- test(hd, tests = "white")
-  result2 <- test(hd, tests = "white")
+  result1 <- without_deprecation(test(hd, tests = "white"))
+  result2 <- without_deprecation(test(hd, tests = "white"))
   
   expect_equal(result1$white$statistic, result2$white$statistic)
   expect_equal(result1$white$p.value, result2$white$p.value)
@@ -303,6 +312,6 @@ test_that("print methods work for HeteroDiagnostic results", {
   expect_output(print(summ), ".*")
   
   # Individual test results should print correctly
-  result <- test(hd, tests = "white")
+  result <- without_deprecation(test(hd, tests = "white"))
   expect_output(print(result$white), "White's test")
 })

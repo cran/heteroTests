@@ -4,14 +4,43 @@
 \alias{fitWLS}
 \title{Weighted Least Squares wrapper}
 \usage{
-fitWLS(model)
+fitWLS(
+  model,
+  data = NULL,
+  var_formula = NULL,
+  form = c("exponential", "power")
+)
 }
 \arguments{
-\item{model}{A fitted model of class \code{lm}.}
+\item{model}{A fitted model of class \code{lm}, or a \code{glm} with the Gaussian
+family and the identity link.}
+
+\item{data}{Optional \link[base:data.frame]{base::data.frame} holding the variables named in
+\code{var_formula}. It is needed only when they are not in the model frame.
+Since 0.16.0 its rows are matched to the observations of the fit as the
+tests that read \code{data} match them, data with row names of their own in any
+order and data that number their rows (a tibble) in the order of the fit,
+and other data are refused, where numbered data in another order were read
+by position. A variable of \code{var_formula} that neither \code{data} nor the model
+frame holds is refused, where it was found in the workspace. Without
+\code{var_formula}, \code{data} is not read, but it is matched in the same way, and
+other data are refused, where they were ignored.}
+
+\item{var_formula}{One-sided formula naming the variance regressors, for
+example \code{~ x}. \code{NULL}, the default, uses the regressors of \code{model}.}
+
+\item{form}{Character scalar choosing the variance function:
+\code{"exponential"} (the default) or \code{"power"}. See the section on variance
+functions.}
 }
 \value{
 A new \code{lm} object fitted with weights. The estimated variances are
-attached as the \code{"variance_model"} attribute.
+attached as the \code{"variance_model"} attribute, and the fitted variance
+function (its form, regressors and coefficients) as the
+\code{"variance_function"} attribute, which is what
+\code{\link[=performVarianceFormTest]{performVarianceFormTest()}} reads, and what the bootstrap tests read to
+estimate the weights again in each replicate. When \code{model} was fitted
+with weights, the attribute also holds them, as \code{initial_weights}.
 }
 \description{
 Refit a model by feasible generalised least squares, weighting each
@@ -22,27 +51,105 @@ The variance is \emph{modelled}, not read off the residuals directly. A single
 squared residual is a one-degree-of-freedom estimate of \eqn{\sigma_i^2} and
 far too noisy to invert: weighting by \eqn{1/e_i^2} hands almost all of the
 weight to whichever observations the initial fit happened to reproduce most
-closely. This function instead regresses \eqn{\log e_i^2} on the model's own
-design matrix and takes \eqn{\hat\sigma_i^2 = \exp(\hat g_i)} from the fitted
-values, the standard feasible-GLS recipe; weights are \eqn{1/\hat\sigma_i^2}.
-
-The log scale keeps the fitted variances positive without constraining the
-auxiliary regression, and residuals that are numerically zero are floored
-before the logarithm, with a warning.
-
-Weights estimated this way are consistent under a correctly specified variance
-model, so standard errors from the returned fit are usable. They were not
-before 0.9.0, when the weights were the raw inverse squared residuals: the
-weighted residual sum of squares then collapsed towards \eqn{n} regardless of
-the data, and nominal 95\% intervals covered the truth about 10\% of the time.
-
-If the variance model cannot be fitted, or yields no usable variation, the
-function falls back to equal weights, which reduces the result to the original
-OLS fit.
+closely. This function instead fits a variance function to the squared
+residuals and takes \eqn{\hat\sigma_i^2} from its fitted values, the
+standard feasible-GLS recipe; weights are \eqn{1/\hat\sigma_i^2}.
 }
+\section{Variance functions}{
+
+\code{form} chooses the shape of the variance function and \code{var_formula} the
+variables \eqn{z_i} it depends on. Both forms are linear in the logarithm
+of the variance and carry their own constant.
+\describe{
+\item{\code{"exponential"}}{\eqn{\log \sigma_i^2 = \gamma_0 + z_i^\top \gamma},
+the multiplicative model of Harvey (1976), estimated by regressing
+\eqn{\log e_i^2} on \eqn{z_i}. The log scale keeps the fitted variances
+positive without constraining the auxiliary regression. This is the
+default, and with \code{var_formula = NULL} it is what \code{fitWLS()} has
+computed since 0.9.0.}
+\item{\code{"power"}}{\eqn{\log \sigma_i^2 = \gamma_0 + \sum_j \delta_j \log
+    z_{ij}}, that is \eqn{\sigma_i^2 \propto \prod_j z_{ij}^{\delta_j}}, the
+model of Park (1966). It is the exponential form in the logarithms of
+the regressors, which must be strictly positive. \eqn{\delta = 2} is the
+textbook case of a standard deviation proportional to \eqn{z}.}
+}
+Other log-linear shapes are written through \code{var_formula}, for example
+\code{~ x + I(x^2)} or \code{~ sqrt(x)}. The additive model
+\eqn{\sigma_i^2 = \alpha_0 + z_i^\top \alpha} is not offered: nothing keeps
+its fitted variances positive, and in the validation study it was not
+usable in a material share of samples drawn from an additive model itself
+(\code{inst/validation/README.md}).
+
+Residuals that are numerically zero are floored before the logarithm is
+taken, with a warning.
+
+Weights estimated this way are consistent under a correctly specified
+variance function, so standard errors from the returned fit are usable. They
+were not before 0.9.0, when the weights were the raw inverse squared
+residuals: the weighted residual sum of squares then collapsed towards
+\eqn{n} regardless of the data, and nominal 95\% intervals covered the truth
+about 10\% of the time.
+
+Whether the variance function \emph{is} correctly specified can be tested: pass
+the result to \code{\link[=performVarianceFormTest]{performVarianceFormTest()}}.
+
+A test of constant variance on the result takes its weights as known,
+although they were estimated from the same data, so its reference
+distribution is only approximate: see the validation study in
+\code{inst/validation/README.md}. The bootstrap
+tests \code{\link[=performWildBootstrapTest]{performWildBootstrapTest()}}, \code{\link[=performWhiteTestBootstrap]{performWhiteTestBootstrap()}} and
+\code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}} allow for the estimation. Since 0.15.0 they run
+\code{fitWLS()} again on each replicate by default: they fit it as \code{model} was
+fitted, fit the recorded variance function again to its residuals, on the
+recorded regressors, and refit it with the weights that gives. Their
+argument \code{reestimate_weights = FALSE} holds the weights fixed instead, as
+they did before 0.15.0.
+
+If the variance function cannot be fitted, or yields no usable variation,
+the function falls back to equal weights, which reduces the result to the
+original OLS fit.
+
+The weighted fit keeps the design and the offset of \code{model}, whether the
+offset was given as an argument, \code{lm(..., offset = o)}, or written in the
+formula, \code{offset(o)}. Its coefficients, fitted values and residuals are
+those \code{lm()} returns for the same call with the estimated weights added.
+On a model fitted with weights, the refit uses the estimated weights in
+their place, and \code{weights()} of the result returns them. Since 0.16.0 the
+response, the design and the offset are read from the fit, as the tests read
+them, and a fit with \code{model = FALSE} whose model frame, rebuilt from the data
+it was fitted to, no longer holds its response, because those data changed
+after the fit, is refused, where it was refitted to the response of the
+changed data; a fit with \code{model = FALSE} whose data are gone is refitted
+from \code{data} that give its response and fitted values.
+
+A \code{glm} with the Gaussian family and the identity link is a least-squares
+fit, with the design and residuals of the \code{lm}, and since 0.16.0 the result
+for it is the \code{lm} returned for that \code{lm}, prior weights included, with the
+call of that \code{lm}: \code{stats::lm()}, without the arguments only \code{glm()} takes,
+so that \code{update()} fits an \code{lm} again. Before, it kept the class and the call
+of the \code{glm} without its family, which \code{summary()} could not read and every
+test refused. Any other \code{glm} is refused.
+}
+
 \examples{
 data(mtcars)
 m <- lm(mpg ~ wt + qsec, data = mtcars)
 wls <- fitWLS(m)
 summary(wls)
+
+# Variance proportional to a power of one regressor
+wls_power <- fitWLS(m, var_formula = ~ wt, form = "power")
+attr(wls_power, "variance_function")$coefficients
+}
+\references{
+Harvey, A. C. (1976). Estimating regression models with multiplicative
+heteroscedasticity. \emph{Econometrica, 44}(3), 461--465.
+\doi{10.2307/1913974}
+
+Park, R. E. (1966). Estimation with heteroscedastic error terms.
+\emph{Econometrica, 34}(4), 888. \doi{10.2307/1910108}
+}
+\seealso{
+\code{\link[=performVarianceFormTest]{performVarianceFormTest()}} to test the variance function that was
+fitted.
 }

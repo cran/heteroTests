@@ -6,7 +6,7 @@
 \usage{
 performQuantileRegressionTest(
   model,
-  data,
+  data = NULL,
   taus = c(0.25, 0.75),
   se_type = c("nid", "ker"),
   iid = TRUE
@@ -15,7 +15,18 @@ performQuantileRegressionTest(
 \arguments{
 \item{model}{A fitted \link[stats:lm]{stats::lm} object describing the mean structure whose conditional quantile slopes are to be compared.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} containing the variables referenced in \code{model}.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design and offset are read from the fit itself, so a model
+that transforms its variables, has an \code{offset()} term, or takes its
+\code{offset} from a column of the data needs no \code{data}, and the model frame of
+\code{model} is accepted as \code{data} (since 0.16.0; before, such models needed
+\code{data}). Data that are given are matched to the observations of the fit:
+rows with row names of their own by name, in any order; rows that only
+number themselves (a tibble, a data.table, a data frame whose row names
+were reset) by the row numbers of the fit, or in the order of the fit when
+they hold one row per observation. The rows the fit dropped may be there
+or not. Data whose rows cannot be shown to hold the observations of the
+fit are refused; see \code{\link{test_results}}.}
 
 \item{taus}{Numeric vector containing at least two distinct quantiles strictly between zero and one.}
 
@@ -31,6 +42,41 @@ Tests equality of regression slopes across two or more conditional quantiles usi
 }
 \details{
 Under a pure location-shift model with homoskedastic errors, regression slopes are equal across quantiles. Rejection therefore provides evidence against that location-shift/homoskedastic specification. The result should not be interpreted as a universal test for every possible form of heteroscedasticity.
+
+Weighted fits are refused, although the resampling tests accept them. On a
+fit with weights \eqn{w_i} the null hypothesis is that the Pearson residuals
+\eqn{\sqrt{w_i}\, e_i}{sqrt(w_i) e_i} have constant variance, which is a
+statement about the regression of \eqn{\sqrt{w_i}\, y_i}{sqrt(w_i) y_i} on
+\eqn{\sqrt{w_i}\, x_i}{sqrt(w_i) x_i}. The quantile regressions this test
+fits are of \eqn{y} on \eqn{x}, where the errors have variance
+\eqn{\sigma^2 / w_i}{sigma^2 / w_i} by assumption, so their slopes differ across
+quantiles even when the weights are right. Fitting them on the weighted scale
+does not by itself repair that: there the conditional quantiles are the
+regression plus a constant, and the constant is not a column of the weighted
+regressors. Adding a column of ones would restore the location-shift form,
+but that version of the test needs its own derivation and its own size
+study, and has neither.
+}
+\section{Supported models}{
+It accepts an unweighted \code{lm} and an unweighted \code{glm} with the Gaussian family and the
+identity link and, since 0.16.0, a rank-deficient one: \code{quantreg::rq()} refuses a singular
+design, so the quantile regressions are fitted to the columns that were not aliased, which gives the
+value of the same model fitted without them. Since 0.16.0 it also accepts a model with an offset:
+the quantile regressions are fitted to the response of the fit minus its offset, on the design of
+the fit, which is the model with the offset, since the offset shifts every conditional quantile as
+it shifts the mean; before, they were refitted from the formula, which left the offset out. Since
+0.16.0 it also accepts a model with a single regressor, such as \code{lm(y ~ x)}; before, it
+stopped with "subscript out of bounds" on one, and \code{runHeteroTests()} returned its fallback,
+the rank permutation test, under the name \code{quantile_regression}. It
+refuses a weighted fit, a \code{fitWLS()} fit among them, as it refits the model without the
+weights, a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a coefficient that
+is not finite for another reason, and \code{data} that lack rows or variables of the fit.
+It refuses a multivariate \code{lm} ("needs a model with one response"), and, since 0.16.0, an
+\code{mgcv::gam()} fit with smooth terms: a smooth term is usually penalised, and a penalised fit
+is not the least-squares fit of the design the test fits again. A later step settles which tests
+take such a fit; a \code{gam} without smooth terms is tested as the Gaussian \code{glm} it is.
+Which model each test accepts, and why, is set out in \code{\link{test_results}}, under \emph{Supported
+models}.
 }
 \examples{
 if (requireNamespace("quantreg", quietly = TRUE)) {

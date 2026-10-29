@@ -5,6 +5,8 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 
 ## -----------------------------------------------------------------------------
 model <- lm(stations ~ mag + depth, data = quakes)

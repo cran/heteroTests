@@ -7,6 +7,13 @@
 #' @param model A fitted [stats::lm] (or other object supported by
 #'   [stats::residuals]) whose residuals are tested for conditional variance
 #'   dependence.
+#' @param data Optional data frame the model was fitted to. When `NULL`, the
+#'   default, the model frame of `model` is used. The statistic is computed
+#'   from the residuals of `model`, so `data` does not change the result; it is
+#'   accepted so that every test takes `(model, data, ...)`. Before 0.15.0 the
+#'   second argument was `lags`: a number passed there by position is still
+#'   read as `lags`, with a warning that shows the new call; that form stops
+#'   working in 1.0.0.
 #' @param lags A single positive integer giving the maximum lag order used in the
 #'   portmanteau statistic. Values between 5 and 20 are common in practice.
 #'
@@ -59,24 +66,36 @@
 #' @seealso
 #' [performArchLMTest()] for the related Lagrange Multiplier version and
 #' [performSzroeterTest()] for an ordered alternative on cross-sectional data.
-performMcLeodLiTest <- function(model, lags = 10) {
+performMcLeodLiTest <- function(model, data = NULL, lags = 10) {
+  rrefuse_non_gaussian_glm(model, "performMcLeodLiTest")
+  if (is.numeric(data) && is.null(dim(data)) && missing(lags)) {
+    rwarn_positional_call("performMcLeodLiTest", substitute(model), list(lags = substitute(data)))
+    lags <- data
+    data <- NULL
+  }
+  # The model context (R/model_context.R) refuses a model frame that
+  # `model = FALSE` rebuilt from data changed after the fit. The test reads
+  # nothing from `data`, which is matched to the observations of the fit as by
+  # every test built on the context (decision 31).
+  rcheck_data_argument(data, "performMcLeodLiTest")
+  ctx <- rmodel_context(model, data, fn = "performMcLeodLiTest", test_label = "McLeod-Li")
   if (!is.numeric(lags) || length(lags) != 1L || is.na(lags) || lags < 1) {
     stop("`lags` must be a positive integer.", call. = FALSE)
   }
   lags <- as.integer(lags)
 
   min_required <- rTEST_REQUIREMENTS$mcleod_li(lags)
-  rvalidateModelInputs(model, test_name = "McLeod-Li", min_obs = min_required)
+  rvalidateModelInputs(model, test_name = "McLeod-Li", min_obs = min_required, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_data <- tryCatch(stats::model.frame(model), error = function(e) NULL)
-  requirements <- rvalidateTestRequirements("mcleod_li", model = model, data = model_data, lags = lags)
+  requirements <- rvalidateTestRequirements("mcleod_li", model = model, data = ctx$frame, lags = lags)
   rprocessValidationResult(requirements)
 
   ht_log("INFO", "Running McLeod-Li test")
 
-  res2 <- stats::residuals(model)^2
+  res2 <- rpearson_residuals(model)^2
   if (stats::var(res2) <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "McLeod-Li test requires variability in squared residuals"
     )
@@ -88,7 +107,7 @@ performMcLeodLiTest <- function(model, lags = 10) {
 
   lb <- stats::Box.test(res2, lag = lags, type = "Ljung-Box")
   if (anyNA(c(lb$statistic, lb$parameter, lb$p.value))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "McLeod-Li test could not compute the Ljung-Box statistic"
     )

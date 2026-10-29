@@ -7,6 +7,8 @@ knitr::opts_chunk$set(
 )
 library(heteroTests)
 library(ggplot2)
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 
 ## ----example-finance, echo=TRUE-----------------------------------------------
 set.seed(1)

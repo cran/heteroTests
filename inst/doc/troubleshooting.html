@@ -262,7 +262,11 @@ constant to shift the data.</p>
 <h3>Large Datasets</h3>
 <p>For very large data sets consider using
 <code>performWhiteTestStreaming()</code> or running diagnostics on a
-representative sample to reduce computation time.</p>
+representative sample to reduce computation time.
+<code>runHeteroTests()</code> runs the streaming tests when it is given
+a finite <code>chunk_threshold_mb</code>, such as
+<code>chunk_threshold_mb = 100</code>; by default it runs the exact
+tests whatever the size of the data.</p>
 </div>
 <div id="convergence-problems" class="section level3">
 <h3>Convergence Problems</h3>
@@ -282,8 +286,8 @@ results.</p>
 <div id="power-considerations" class="section level3">
 <h3>Power Considerations</h3>
 <p>Some tests have low power in small samples. Simulation via
-<code>simulate_power_analysis()</code> can help determine the best
-approach for a given situation.</p>
+<code>simulate_power()</code> can help determine the best approach for a
+given situation.</p>
 </div>
 </div>
 

@@ -298,7 +298,7 @@ test_that("performSpreadLevelTest works correctly", {
 test_that("performNCVTest works correctly", {
   test_obj <- create_test_model()
   
-  result <- performNCVTest(test_obj$model)
+  result <- without_deprecation(performNCVTest(test_obj$model))
   expect_htest(result)
   expect_equal(result$method, "Cook-Weisberg score test for non-constant variance")
 })
@@ -352,8 +352,12 @@ test_that("performGlejserTest works correctly", {
   
   result <- performGlejserTest(test_obj$model, test_obj$data, "x1", transformation = "sqrt")
   expect_htest(result)
+  # The default since 0.15.0 is robust = TRUE.
+  expect_equal(result$method, "Glejser test for heteroscedasticity (robust to asymmetric errors)")
+  result <- performGlejserTest(test_obj$model, test_obj$data, "x1", transformation = "sqrt",
+                               robust = FALSE)
   expect_equal(result$method, "Glejser test for heteroscedasticity")
-  
+
   # Test different transformations
   transformations <- c("abs", "sqrt", "inverse", "inverse_sqrt")
   for (trans in transformations) {

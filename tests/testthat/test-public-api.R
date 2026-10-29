@@ -17,6 +17,22 @@ removed_exports <- c(
   "performModifiedBartlettTest"
 )
 
+# The same six as prose names them, in the order above, for the README and the
+# vignettes, which name a test in words as often as by its function. The
+# README went on advertising "Cameron--Trivedi" and an "HC0-HC4 covariance
+# test" after both were removed in 0.8.0. Patterns are case-insensitive Perl
+# regular expressions; a dash between two names may be written -, --, an en
+# dash or an em dash, and any space may be a line break.
+removed_dash <- "\\s*[-\u2013\u2014]+\\s*"
+removed_display_names <- c(
+  "\\bRice('s)?\\s+test",
+  paste0("\\bCurry", removed_dash, "Walsh"),
+  paste0("\\bHC[0-4]?(", removed_dash, "HC[0-4]|\\s+to\\s+HC[0-4])?\\s+covariance\\s+test"),
+  "\\bordered\\s+LM\\s+test",
+  paste0("\\bCameron", removed_dash, "Trivedi"),
+  "\\bmodified\\s+Bartlett"
+)
+
 test_that("the removed diagnostics are no longer exported", {
   exports <- getNamespaceExports("heteroTests")
   for (nm in removed_exports) {
@@ -86,4 +102,223 @@ test_that("nothing shipped still points at a removed diagnostic", {
     info = paste("still reference a removed diagnostic:",
                  paste(sub(root, "", offenders, fixed = TRUE), collapse = ", "))
   )
+})
+
+test_that("every diagnostic a recommendation can name is registered", {
+  # The scan above looks for function names. A recommendation names a
+  # registry entry instead, and runHeteroTests(tests = ) stops on the first
+  # name it does not know, so a stale one fails the whole run.
+  #
+  # suggestDiagnosticsForProfile() is the only recommendation function that
+  # returns test names: generateHeteroRecommendations() returns its output,
+  # and buildDiagnosticDecisionTree() repeats the names it is given. It
+  # branches on the size bucket, high dimension, spatial fields, the
+  # missingness rate (at 0.05) and the shape of each numeric variable, and
+  # every combination of the values analyseDatasetCharacteristics() produces
+  # is tried here.
+  registered <- ls(heteroTests:::.diagnostic_registry)
+  shapes <- c(
+    "none", "insufficient_data", "constant", "undetermined",
+    "approximately_symmetric", "mild_right_skew", "mild_left_skew",
+    "strong_right_skew", "strong_left_skew"
+  )
+  grid <- expand.grid(
+    size_bucket = c("small", "medium", "large", "very_large"),
+    high_dimensional = c(FALSE, TRUE),
+    detected_spatial_fields = c(FALSE, TRUE),
+    missing_rate = c(NA, 0, 0.049, 0.05, 0.2),
+    shape = shapes,
+    stringsAsFactors = FALSE
+  )
+
+  named <- character()
+  for (i in seq_len(nrow(grid))) {
+    g <- grid[i, ]
+    profile <- list(
+      size_bucket = g$size_bucket,
+      high_dimensional = g$high_dimensional,
+      detected_spatial_fields = g$detected_spatial_fields,
+      missingness = if (is.na(g$missing_rate)) NULL else list(overall_rate = g$missing_rate),
+      numeric_distribution = if (g$shape == "none") {
+        data.frame()
+      } else {
+        data.frame(variable = "x", shape = g$shape, stringsAsFactors = FALSE)
+      }
+    )
+    named <- union(named, suggestDiagnosticsForProfile(profile)$test)
+  }
+
+  expect_true(length(named) > 0L)
+  expect_identical(setdiff(named, registered), character(),
+                   info = "recommended but not registered")
+})
+
+test_that("no object in R/ has two different definitions", {
+  # Without a Collate field R sources R/ in alphabetical order, so when two
+  # files assign the same name the later one wins and the earlier one is code
+  # that never runs and that no test can reach. Until this check was added,
+  # suggestDiagnosticsForProfile() was defined in
+  # R/intelligent_recommendations.R and again in
+  # R/zz_profile_diagnostic_selection.R; the copy that never ran still
+  # recommended "hc_covariance", a diagnostic removed in 0.8.0. Identical
+  # copies, such as the two of `%||%`, cannot change behaviour and are allowed.
+  root <- skip_if_not_source_tree()
+  files <- list.files(file.path(root, "R"), pattern = "[.][Rr]$", full.names = TRUE)
+
+  definitions <- list()
+  for (f in files) {
+    for (e in parse(f, keep.source = FALSE)) {
+      is_assignment <- is.call(e) &&
+        (identical(e[[1]], as.name("<-")) || identical(e[[1]], as.name("="))) &&
+        (is.name(e[[2]]) || is.character(e[[2]]))
+      if (is_assignment) {
+        nm <- as.character(e[[2]])
+        definitions[[nm]] <- c(definitions[[nm]], paste(deparse(e[[3]]), collapse = "\n"))
+      }
+    }
+  }
+  differing <- names(definitions)[
+    vapply(definitions, function(d) length(unique(d)) > 1L, logical(1))
+  ]
+
+  expect_identical(differing, character(),
+                   info = "defined more than once, differently")
+})
+
+# README.md is not in the built package, so these two run from a source
+# checkout only. Each file is read whole, so a name broken across lines is
+# still found.
+readme_and_vignettes <- function(root) {
+  files <- c(
+    file.path(root, "README.md"),
+    list.files(file.path(root, "vignettes"), pattern = "[.]Rmd$", full.names = TRUE)
+  )
+  texts <- vapply(files, function(f) {
+    paste(readLines(f, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  }, character(1))
+  names(texts) <- basename(files)
+  texts
+}
+
+test_that("the README and the vignettes name no removed diagnostic", {
+  root <- skip_if_not_source_tree()
+  texts <- readme_and_vignettes(root)
+  patterns <- c(removed_exports, removed_display_names)
+
+  hits <- character()
+  for (f in names(texts)) {
+    for (p in patterns) {
+      if (grepl(p, texts[[f]], ignore.case = TRUE, perl = TRUE)) {
+        hits <- c(hits, paste0(f, " matches ", p))
+      }
+    }
+  }
+  expect_identical(
+    hits, character(),
+    info = paste("name a diagnostic removed in 0.8.0:", paste(hits, collapse = "; "))
+  )
+})
+
+test_that("every test the README and the vignettes name is exported", {
+  root <- skip_if_not_source_tree()
+  texts <- readme_and_vignettes(root)
+  named <- unique(unlist(regmatches(
+    texts, gregexpr("\\bperform[A-Za-z]+(?=\\()", texts, perl = TRUE)
+  )))
+  expect_gt(length(named), 0L)
+  not_exported <- setdiff(named, getNamespaceExports("heteroTests"))
+  expect_identical(
+    not_exported, character(),
+    info = paste("named but not exported:", paste(not_exported, collapse = ", "))
+  )
+})
+
+# The planned 1.0 export list. 0.14.0 reviewed every export and gave each a
+# verdict (the export inventory in ROADMAP.md, decided on 2026-10-14): core API,
+# renamed, internal or moved out. The names planned for 1.0 are the core API
+# plus the three names 0.14.0 adds; the renamed and internal names warn in
+# 0.14.x and go in 1.0.0; the dashboard and the benchmark suite move to a
+# companion package. An export in none of these lists is an accidental one.
+
+planned_1_0_exports <- c(
+  "analyseDatasetCharacteristics", "analyzeMLResiduals",
+  "autoCompareRemediations", "autoTransform", "bootstrapTestStatistic",
+  "buildDiagnosticDecisionTree", "cachedTest", "checkModel",
+  "clearAnalysisCache", "clearTestCache", "compareModelDiagnostics",
+  "compareTestResults", "composeDiagnosticNarrative", "downloadTeachingData",
+  "fitRobust", "fitWLS", "generateDiagnosticReport",
+  "generateHeteroRecommendations", "HeteroDiagnostic", "ht_set_log_level",
+  "interpretHeteroTestResults", "listDiagnostics", "performArchLMTest",
+  "performBartlettTest", "performBoxMTest", "performBPRandomEffectsTest",
+  "performBPTest", "performBPTestRobust", "performBPTestStreaming",
+  "performBrownForsytheTest", "performCookWeisbergTest",
+  "performDavidianCarrollTest", "performFlignerKilleenTest",
+  "performGlejserTest", "performGQTest", "performHarrisonMcCabeTest",
+  "performHartleyFmaxTest", "performHarveyTest", "performHighDimensionalTest",
+  "performInfluenceDiagnostics", "performKoenkerTest",
+  "performKoenkerTestStreaming", "performLeveneTest", "performMcLeodLiTest",
+  "performOBrienTest", "performParkTest", "performPesaranTest",
+  "performQuantileRegressionTest", "performRankPermutationTest",
+  "performRESETTest", "performScatterDiagnostic", "performSpatialHeteroTest",
+  "performSpearmanTest", "performSpreadLevelTest", "performSzroeterTest",
+  "performVarianceFormTest", "performVIFDiagnostic", "performWhiteTest",
+  "performWhiteTestBootstrap", "performWhiteTestRobust",
+  "performWhiteTestStreaming", "performWildBootstrapTest", "plotBeforeAfter",
+  "plotBubbleVariance", "plotDiagnosticSuite", "plotResidualDensity",
+  "plotResidualQQ", "plotResidualsFitted", "plotSpreadLevel",
+  "recommendRemediationStrategies", "registerDiagnostic", "registerPlot",
+  "runAdvancedDiagnostics", "runDiagnosticPlots", "runDiagnostics",
+  "runHeteroTests", "runHeteroTestsParallel", "runMultivariateTests",
+  "runPanelTests", "runSurveyHeteroTests", "runTimeSeriesTests",
+  "scale_colour_hetero_diagnostic", "scale_fill_hetero_diagnostic",
+  "sigma_exp_decay", "sigma_exponential", "sigma_gaussian_peak", "sigma_group",
+  "sigma_inverse", "sigma_linear", "sigma_logistic", "sigma_multiplicative",
+  "sigma_piecewise", "sigma_piecewise_linear", "sigma_poly", "sigma_power",
+  "sigma_sin", "sigma_spatial", "sigma_step", "sigma_u_shape", "simulate_arch1",
+  "simulate_hetero", "simulate_power", "simulate_size",
+  "suggestDiagnosticsForProfile", "suggestRemediation", "theme_hetero",
+  "warnDiagnosticAssumptions"
+)
+
+deprecated_in_0_14 <- c(
+  "checkData", "checkModelEnhanced", "ht_clear_log_history",
+  "ht_enable_log_capture", "ht_log_history", "performBreuschPaganTest",
+  "performNCVTest", "performStudentizedBPTest", "plotDiagnosticSuiteEnhanced",
+  "plotResidualsFittedEnhanced", "rbootstrap_test_statistic",
+  "rcalculateEffectSize", "restimate_test_power", "rvalidate_against_reference",
+  "simulate_power_analysis", "simulate_type_I_errors", "std_error",
+  "std_warning", "test", "test_factory", "TestFactory", "validateTestInputs"
+)
+
+# Renamed in 0.15.0 (decided 2026-10-15); the old name warns and goes in 1.0.0.
+deprecated_in_0_15 <- c("rrunAdvancedDiagnostics")
+
+moving_out <- c(
+  "generate_benchmark_report", "launchDiagnosticDashboard",
+  "run_benchmark_suite"
+)
+
+test_that("every export is planned for 1.0, deprecated in 0.14.0 or moving out", {
+  exports <- getNamespaceExports("heteroTests")
+  unexpected <- setdiff(
+    exports,
+    c(planned_1_0_exports, deprecated_in_0_14, deprecated_in_0_15, moving_out)
+  )
+  expect_identical(
+    sort(unexpected), character(),
+    info = paste("exported but in no list:", paste(unexpected, collapse = ", "))
+  )
+})
+
+test_that("every name planned for 1.0 is exported", {
+  missing <- setdiff(planned_1_0_exports, getNamespaceExports("heteroTests"))
+  expect_identical(
+    sort(missing), character(),
+    info = paste("planned for 1.0 but not exported:", paste(missing, collapse = ", "))
+  )
+})
+
+test_that("the planned, deprecated and moving lists do not overlap", {
+  all_names <- c(planned_1_0_exports, deprecated_in_0_14, deprecated_in_0_15, moving_out)
+  expect_identical(all_names[duplicated(all_names)], character())
 })

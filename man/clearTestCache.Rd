@@ -6,9 +6,22 @@
 \usage{
 clearTestCache()
 }
+\value{
+\code{NULL}, invisibly.
+}
 \description{
-Removes all objects from the internal cache environment so that subsequent
-diagnostic calls recompute their statistics.
+Removes every result from the cache of \code{\link[=cachedTest]{cachedTest()}}, which
+\code{\link[=runHeteroTests]{runHeteroTests()}} also uses for each test with \code{use_cache = TRUE}, so that
+later calls compute them again.
+}
+\details{
+The cache is bounded and holds no test that draws random numbers (see
+\code{\link[=cachedTest]{cachedTest()}}), so clearing it is needed neither to bound the memory of a
+long session nor to draw new replicates with another seed. It is needed
+after a change the key does not see, such as a function or a variable of
+the environment of a model's formula; call \code{\link[=clearAnalysisCache]{clearAnalysisCache()}} then too,
+since the cache of whole calls of \code{\link[=runHeteroTests]{runHeteroTests()}} keeps the results of
+such a model as well.
 }
 \seealso{
 \code{\link[=cachedTest]{cachedTest()}} for invoking diagnostics with memoisation.

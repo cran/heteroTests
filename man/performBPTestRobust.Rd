@@ -6,12 +6,13 @@
 \usage{
 performBPTestRobust(
   model,
-  data,
-  studentized = TRUE,
+  data = NULL,
+  studentize = TRUE,
   bootstrap = FALSE,
-  B = 1000,
+  B = 999,
   ci_level = 0.95,
-  parallel = FALSE
+  parallel = FALSE,
+  studentized
 )
 }
 \arguments{
@@ -20,24 +21,44 @@ residual variance is to be assessed.}
 
 \item{data}{A \link[base:data.frame]{base::data.frame} (or compatible object) containing the
 variables referenced in \code{model}. The data must include all observations used
-to fit \code{model} and should not contain unresolved missing values.}
+to fit \code{model} and should not contain unresolved missing values.
+When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
+terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
+a model that transforms a variable needs \code{data}, as does a
+model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
+argument is a column of the data, which the model frame holds as
+\code{(weights)} or \code{(offset)}.}
 
-\item{studentized}{Logical, use studentized residuals for the auxiliary
-regression (Koenker variant)? Defaults to \code{TRUE}.}
+\item{studentize}{Logical, use studentized residuals for the auxiliary
+regression (Koenker variant)? Defaults to \code{TRUE}. The name matches
+\code{lmtest::bptest()} and \code{\link[=performHarveyTest]{performHarveyTest()}}.}
 
 \item{bootstrap}{Logical, compute bootstrap diagnostics for the
-statistic and p-value?}
+statistic and p-value? The bootstrap is \code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}}, so on
+a fit returned by \code{\link[=fitWLS]{fitWLS()}} each replicate estimates the weights again,
+its default since 0.15.0. There is no argument to hold them fixed here;
+\code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}} with \code{reestimate_weights = FALSE} does that.}
 
-\item{B}{Number of bootstrap replications when \code{bootstrap = TRUE}.}
+\item{B}{Number of bootstrap replications when \code{bootstrap = TRUE}.
+Defaults to 999, at which a bootstrap p-value of the form
+\verb{(1 + #) / (B + 1)} gives an exact test at the 5\% and 1\% levels; it was
+1000 before 0.15.0. The value is recorded in \code{robust_details$bootstrap$B}
+whether or not the bootstrap runs.}
 
 \item{ci_level}{Confidence level for reported intervals.}
 
 \item{parallel}{Logical, allow parallel bootstrap evaluation when the
-\code{parallel} package is available.}
+\code{parallel} package is available. A seeded call gives the same result
+each time; see \emph{Parallel replicates} in \code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}}.}
+
+\item{studentized}{Deprecated since 0.15.0: use \code{studentize}. It is still
+accepted, with a warning, and does what \code{studentize} does; it stops
+working in 1.0.0.}
 }
 \value{
 An augmented \code{htest} object containing a
-\code{robust_details} element describing the additional diagnostics.
+\code{robust_details} element describing the additional diagnostics. Its
+\code{studentized} field records the value of \code{studentize}.
 }
 \description{
 Enhances \code{\link[=performBPTest]{performBPTest()}} by optionally studentising residuals, resampling the
@@ -47,7 +68,23 @@ diagnostics.
 \details{
 Offers expanded reporting for the Breusch–Pagan family of tests including
 bootstrap p-values and asymptotic confidence intervals. The optional
-\code{studentized} argument toggles between the classic and Koenker versions.
+\code{studentize} argument toggles between the classic and Koenker versions.
+}
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. It accounts for an offset with \code{studentize = FALSE}, and
+since 0.16.0 with \code{studentize = TRUE}, the default, whose refit of the design carries the
+offset of the fit.
+It refuses a multivariate \code{lm} ("needs a model with one response"), and, since 0.16.0, an
+\code{mgcv::gam()} fit with smooth terms: a smooth term is usually penalised, and a penalised fit
+is not the least-squares fit of the design the test fits again. A later step settles which tests
+take such a fit; a \code{gam} without smooth terms is tested as the Gaussian \code{glm} it is.
+Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)
@@ -63,6 +100,6 @@ Koenker, R. (1981). A note on studentizing a test for heteroscedasticity.
 \emph{Journal of Econometrics, 17}(1), 107–112.
 }
 \seealso{
-\code{\link[=performBPTest]{performBPTest()}} for the baseline test and \code{\link[=performStudentizedBPTest]{performStudentizedBPTest()}} for the
+\code{\link[=performBPTest]{performBPTest()}} for the baseline test and \code{\link[=performKoenkerTest]{performKoenkerTest()}} for the
 standalone studentised variant.
 }

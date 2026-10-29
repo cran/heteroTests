@@ -4,7 +4,14 @@
 \alias{performWhiteTestBootstrap}
 \title{Bootstrap White test}
 \usage{
-performWhiteTestBootstrap(model, data, B = 1000, parallel = FALSE)
+performWhiteTestBootstrap(
+  model,
+  data = NULL,
+  B = 999,
+  parallel = FALSE,
+  n_cores = NULL,
+  reestimate_weights = NULL
+)
 }
 \arguments{
 \item{model}{A fitted \link[stats:lm]{stats::lm} object representing the mean specification
@@ -12,14 +19,43 @@ to be diagnosed.}
 
 \item{data}{A \link[base:data.frame]{base::data.frame} (or object coercible to one) containing the
 variables referenced by \code{model}. It must include the observations used to
-fit \code{model} and will be checked for missing values.}
+fit \code{model} and will be checked for missing values.
+When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
+terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
+a model that transforms a variable needs \code{data}, as does a
+model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
+argument is a column of the data, which the model frame holds as
+\code{(weights)} or \code{(offset)}.}
 
-\item{B}{Integer scalar giving the number of bootstrap replications. Larger
-values yield smoother p-value estimates at the cost of additional runtime.}
+\item{B}{Integer scalar giving the number of bootstrap replications.
+Defaults to 999. The p-value is \verb{(1 + #) / (B_eff + 1)}, where \code{B_eff} is
+the number of replicates whose statistic is finite (\code{B} when every
+replicate succeeds), so a test at level \code{alpha} is exact only when
+\code{alpha * (B_eff + 1)} is an integer: with 999 it is at the 5\% and 1\%
+levels, and with 1000, the default before 0.15.0, at neither.}
 
-\item{parallel}{Logical scalar; if \code{TRUE} the bootstrap loop is executed with
-\code{\link[parallel:mclapply]{parallel::mclapply()}} when the \code{parallel} package and forked processing are
-available.}
+\item{parallel}{Logical scalar; if \code{TRUE} the replicates are computed in
+parallel, by forked workers (\code{\link[parallel:mclapply]{parallel::mclapply()}}) where the platform
+can fork and on a socket cluster (\code{\link[parallel:makeCluster]{parallel::makeCluster()}}) elsewhere.
+See \emph{Parallel replicates}.}
+
+\item{n_cores}{Optional integer number of worker processes when
+\code{parallel = TRUE}. Defaults to \code{parallel::detectCores() - 1}. The result
+does not depend on it.}
+
+\item{reestimate_weights}{Whether each replicate estimates the weights of a
+\code{\link[=fitWLS]{fitWLS()}} fit again from the variance function \code{fitWLS()} recorded on it.
+\code{NULL}, the default, does so for a \code{fitWLS()} fit and holds the weights
+fixed for any other model. \code{FALSE} holds them fixed, as every call did
+before 0.15.0. \code{TRUE} is an error for a model that \code{fitWLS()} did not
+return, or on which it fell back to equal weights. Each replicate
+regenerates the response and holds the design fixed, so a variance
+regressor that uses a variable of the response which the right-hand side
+of the model does not use, such as \code{y} or \code{x} for \code{I(y / x) ~ z}, or that
+is the response term itself, as \code{~ .} gives, cannot be estimated again:
+\code{NULL} then holds the weights fixed, with a warning, and \code{TRUE} is an
+error. Giving the response as a column of the data, as in \code{r ~ z}, says
+which variables stay. See \emph{Weighted fits}.}
 }
 \value{
 A \code{htest} object reporting both the asymptotic White statistic
@@ -42,13 +78,84 @@ with replacement, forming \eqn{y^{*(b)} = \hat{y} + \hat{e}^{*(b)}}.
 \item Refit the model to each bootstrap sample and recompute White's
 statistic \eqn{T^{*(b)}} using the same auxiliary specification.
 \item Estimate the bootstrap p-value as
-\eqn{\hat{p} = B^{-1} \sum_{b = 1}^B I\{T^{*(b)} \ge T_{\text{obs}}\}}.
+\eqn{\hat{p} = (1 + \sum_{b} I\{T^{*(b)} \ge T_{\text{obs}}\}) /
+    (B_{\text{eff}} + 1)}{p = (1 + number of b with T*(b) >= T_obs) / (B_eff + 1)},
+where \eqn{b} runs over the \eqn{B_{\text{eff}}}{B_eff} replicates whose
+statistic is finite, so the p-value is never zero.
 }
 
 The bootstrap distribution offers improved size control for moderate sample
 sizes or high-dimensional designs where the chi-squared approximation may be
 inaccurate. When \code{parallel = TRUE} the resampling step exploits available CPU
 cores to reduce computation time.
+}
+\section{Parallel replicates}{
+
+With \code{parallel = TRUE} replicate \code{i} draws its random numbers from stream
+\code{i} of a L'Ecuyer-CMRG generator (\code{\link[parallel:RngStream]{parallel::nextRNGStream()}}), seeded by
+one number drawn from the session's generator. A call made after
+\code{set.seed()} therefore returns the same result each time, whatever the
+number of workers and whether they are forked or run on a socket cluster.
+It does not return the result of the same call with \code{parallel = FALSE},
+which draws every replicate from the session's generator, as it did before
+0.15.0: the two are bootstraps of the same data with different draws, and
+each is valid. Before 0.15.0 a seeded call with \code{parallel = TRUE} gave a
+different result each time, and on Windows more than one worker was an
+error.
+}
+\section{Weighted fits}{
+
+A fit with weights \eqn{w_i} is ordinary least squares on
+\eqn{\sqrt{w_i}\, y_i}{sqrt(w_i) y_i} and \eqn{\sqrt{w_i}\, x_i}{sqrt(w_i) x_i},
+whose errors have constant variance under the null hypothesis, and the
+bootstrap is carried out in that regression. What is resampled is its
+residuals, the Pearson residuals \eqn{\sqrt{w_i}\, e_i}{sqrt(w_i) e_i}.
+When the model has an intercept they are centred, as the residuals of an
+unweighted fit with an intercept are, because the weighted regression has
+no constant column. Each draw is divided by \eqn{\sqrt{w_i}}{sqrt(w_i)} to
+return it to the scale of the observation it is added to, and each
+replicate is refitted with the weights, so \code{\link[=performWhiteTest]{performWhiteTest()}} computes
+its statistic from the Pearson residuals as it does for the fit supplied.
+With equal weights the result is that of the unweighted fit.
+
+Weighted or not, each replicate is refitted with an offset the model was
+given as an argument, \code{lm(..., offset = o)}; an offset written in the
+formula, \code{offset(o)}, is evaluated again from the data of the replicate. A
+transformed response, such as \code{log(y)} in \code{log(y) ~ x}, is regenerated on
+the scale the model uses, and the refit reads it in place of \code{log(y)}.
+
+Weights given to the fit are known, and they are held fixed in every
+replicate. On a fit returned by \code{\link[=fitWLS]{fitWLS()}} they were estimated from the same
+data, and since 0.15.0 they are estimated again in each replicate by
+default (\code{reestimate_weights}): the replicate is fitted as the model
+\code{fitWLS()} was given, the variance function \code{fitWLS()} recorded is fitted
+again to its residuals, on the same regressors and with the same form, and
+the replicate is refitted with the weights it gives, so that
+\code{\link[=performWhiteTest]{performWhiteTest()}} sees a \code{fitWLS()} fit of the replicate. A replicate
+whose variance function cannot be fitted, where \code{fitWLS()} would fall back
+to equal weights, counts as a failed replicate, and the p-value is computed
+from the replicates that remain; a warning gives the number that failed.
+
+In \code{inst/validation/weighted-fits-size.R}, the data have standard deviation
+\eqn{\exp(0.3 x)}{exp(0.3 x)}, the variance function is correctly
+specified, the errors are normal, there are 150 observations and
+\code{B = 499}. At the 5\% level the test then rejected 0.064 of the time when it
+held the weights of \code{fitWLS()} fixed, as every call did before 0.15.0 and
+\code{reestimate_weights = FALSE} still does. It rejected 0.0415 when it
+estimated them again, just below the release gate's interval, 0.042 to
+0.058, and 0.054 with the true weights. The section on weighted fits
+in \code{\link[=performWildBootstrapTest]{performWildBootstrapTest()}} has the larger error of Koenker's
+statistic.
+}
+
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 # The bootstrap needs at least 50 observations, so mtcars (32) is too small.
@@ -63,10 +170,11 @@ performWhiteTestBootstrap(mod, sim, B = 199)
 # More replications give a smoother p-value estimate
 performWhiteTestBootstrap(mod, sim, B = 499)
 
-# Enable parallel processing when supported by the operating system
-if (.Platform$OS.type != "windows") {
-  performWhiteTestBootstrap(mod, sim, B = 199, parallel = TRUE)
-}
+# parallel = TRUE runs the replicates on n_cores workers, forked where the
+# platform can fork and on a socket cluster elsewhere. Two is the most
+# R CMD check --as-cran allows, and the result does not depend on it.
+set.seed(42)
+performWhiteTestBootstrap(mod, sim, B = 199, parallel = TRUE, n_cores = 2)
 }
 
 }

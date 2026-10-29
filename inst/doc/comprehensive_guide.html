@@ -12,7 +12,7 @@
 
 <meta name="author" content="heteroTests Package" />
 
-<meta name="date" content="2026-09-15" />
+<meta name="date" content="2026-10-27" />
 
 <title>Comprehensive Guide to Heteroscedasticity Testing</title>
 
@@ -342,7 +342,7 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 <h1 class="title toc-ignore">Comprehensive Guide to Heteroscedasticity
 Testing</h1>
 <h4 class="author">heteroTests Package</h4>
-<h4 class="date">2026-09-15</h4>
+<h4 class="date">2026-10-27</h4>
 
 
 <div id="TOC">
@@ -434,42 +434,38 @@ diagnostics to help visualise patterns in the residuals.</p>
 <span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a><span class="fu">performWhiteTest</span>(mod, dat)</span>
 <span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a><span class="co">#&gt; Warning: Residual outliers detected at rows 24 (|z| &gt; 5). Inspect leverage</span></span>
 <span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a><span class="co">#&gt; before running White.</span></span>
-<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a><span class="co">#&gt; [INFO] Running White test</span></span>
-<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a><span class="co">#&gt; [INFO] White test completed: statistic = 70.9198 df = 2 p = 0</span></span>
+<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a><span class="co">#&gt;  White&#39;s test for heteroscedasticity</span></span>
 <span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a><span class="co">#&gt;  White&#39;s test for heteroscedasticity</span></span>
-<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a><span class="co">#&gt; data:  mod</span></span>
-<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a><span class="co">#&gt; X-squared = 70.92, df = 2, p-value = 3.981e-16</span></span>
-<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: heteroscedasticity present</span></span></code></pre></div>
+<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a><span class="co">#&gt; data:  mod</span></span>
+<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a><span class="co">#&gt; X-squared = 70.92, df = 2, p-value = 3.981e-16</span></span>
+<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: heteroscedasticity present</span></span></code></pre></div>
 </div>
 <div id="example-2-cross-sectional-data" class="section level3">
 <h3>Example 2: Cross-Sectional Data</h3>
 <div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">data</span>(mtcars)</span>
 <span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">lm</span>(mpg <span class="sc">~</span> wt <span class="sc">+</span> hp, <span class="at">data =</span> mtcars)</span>
 <span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a><span class="fu">performBPTest</span>(fit, mtcars)</span>
-<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Breusch-Pagan test</span></span>
-<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a><span class="co">#&gt;  Breusch-Pagan test for heteroscedasticity</span></span>
-<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a><span class="co">#&gt; data:  mpg ~ wt + hp</span></span>
-<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a><span class="co">#&gt; X-squared = 1.0268, df = 2, p-value = 0.5985</span></span></code></pre></div>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a><span class="co">#&gt;  Breusch-Pagan test for heteroscedasticity</span></span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a><span class="co">#&gt; data:  mpg ~ wt + hp</span></span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a><span class="co">#&gt; X-squared = 1.0268, df = 2, p-value = 0.5985</span></span></code></pre></div>
 </div>
 <div id="example-3-panel-data" class="section level3">
 <h3>Example 3: Panel Data</h3>
 <div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>dat <span class="ot">&lt;-</span> <span class="fu">simulate_hetero</span>(<span class="at">n =</span> <span class="dv">250</span>, <span class="at">beta0 =</span> <span class="dv">1</span>, <span class="at">beta1 =</span> <span class="dv">2</span>, <span class="at">sigma_func =</span> sigma_linear)</span>
 <span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">lm</span>(y <span class="sc">~</span> x, <span class="at">data =</span> dat)</span>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="fu">performSzroeterTest</span>(fit, dat, <span class="at">order_by =</span> <span class="st">&quot;x&quot;</span>)</span>
-<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Szroeter test</span></span>
-<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt;  Szroeter test for ordered heteroscedasticity</span></span>
-<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; data:  fit</span></span>
-<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; Q = 9.062, n = 250, p-value &lt; 2.2e-16</span></span>
-<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: variance increases with &#39;x&#39;</span></span>
-<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt; sample estimates:</span></span>
-<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt;        h </span></span>
-<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; 183.9943</span></span></code></pre></div>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt;  Szroeter test for ordered heteroscedasticity</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; data:  fit</span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; Q = 9.0935, n = 250, p-value &lt; 2.2e-16</span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: variance increases with &#39;x&#39;</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; sample estimates:</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt;        h </span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt; 183.9943</span></span></code></pre></div>
 </div>
 </div>
 <div id="remediation-strategies" class="section level2">

@@ -7,6 +7,14 @@
 #'
 #' @param model A fitted [stats::lm] object representing the mean equation under
 #'   study.
+#' @param data Optional data frame the model was fitted to. When `NULL`, the
+#'   default, the model frame of `model` is used. The statistic is computed
+#'   from the residuals, fitted values and model matrix of `model`, so `data`
+#'   does not change the result; it is accepted so that every test takes
+#'   `(model, data, ...)`. Before 0.15.0 the second argument was `auxiliary`
+#'   and the third `studentize`: a string passed second by position, and a
+#'   logical value after it, are still read as those two, with a warning that
+#'   shows the new call; that form stops working in 1.0.0.
 #' @param auxiliary Character scalar choosing the variance regressors \eqn{Z}.
 #'   `"regressors"` (the default) uses the model's own explanatory variables,
 #'   which is the specification in Harvey (1976) and the usual textbook form.
@@ -80,18 +88,45 @@
 #' [performParkTest()] and [performGlejserTest()] implement related variance
 #' function diagnostics; [performBPTest()] tests the same regressor set under an
 #' additive rather than a multiplicative variance model.
-performHarveyTest <- function(model,
+performHarveyTest <- function(model, data = NULL,
                               auxiliary = c("regressors", "fitted"),
                               studentize = FALSE) {
+  rrefuse_non_gaussian_glm(model, "performHarveyTest")
+  if (is.character(data) && is.null(dim(data))) {
+    # performHarveyTest(m, "fitted") and performHarveyTest(m, "fitted", TRUE),
+    # the positional calls of the signature before 0.15.0.
+    if (missing(auxiliary)) {
+      rwarn_positional_call(
+        "performHarveyTest", substitute(model), list(auxiliary = substitute(data))
+      )
+      auxiliary <- data
+      data <- NULL
+    } else if (is.logical(auxiliary) && missing(studentize)) {
+      rwarn_positional_call(
+        "performHarveyTest", substitute(model),
+        list(auxiliary = substitute(data), studentize = substitute(auxiliary))
+      )
+      studentize <- auxiliary
+      auxiliary <- data
+      data <- NULL
+    }
+  }
+  # The model context (R/model_context.R) refuses a model frame that
+  # `model = FALSE` rebuilt from data changed after the fit, from which the
+  # design was read before 0.16.0. The test reads nothing from `data`, which is
+  # matched to the observations of the fit as by every test built on the
+  # context (decision 31).
+  rcheck_data_argument(data, "performHarveyTest")
+  ctx <- rmodel_context(model, data, fn = "performHarveyTest", test_label = "Harvey")
   auxiliary <- match.arg(auxiliary)
   if (!is.logical(studentize) || length(studentize) != 1L || is.na(studentize)) {
     stop("`studentize` must be a single logical value.", call. = FALSE)
   }
 
-  rvalidateModelInputs(model, test_name = "Harvey", min_obs = 15L)
+  rvalidateModelInputs(model, test_name = "Harvey", min_obs = 15L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_data <- tryCatch(stats::model.frame(model), error = function(e) NULL)
-  requirements <- rvalidateTestRequirements("harvey", model = model, data = model_data)
+  requirements <- rvalidateTestRequirements("harvey", model = model, data = ctx$frame)
   rprocessValidationResult(requirements)
 
   ht_log("INFO", "Running Harvey test")
@@ -99,32 +134,33 @@ performHarveyTest <- function(model,
   if (auxiliary == "fitted") {
     yhat <- stats::fitted(model)
     if (stats::var(yhat) <= .Machine$double.eps) {
-      std_error(
+      .std_error(
         "rassumption_violation",
         assumption = "Harvey test requires variability in fitted values"
       )
     }
     Z <- cbind(yhat = yhat, yhat_sq = yhat^2)
   } else {
-    X <- stats::model.matrix(model)
+    # The design of the fit, without the columns a rank-deficient fit aliased.
+    X <- rcontext_design(ctx)
     Z <- X[, colnames(X) != "(Intercept)", drop = FALSE]
     if (ncol(Z) == 0L) {
-      std_error(
+      .std_error(
         "rassumption_violation",
         assumption = "Harvey test requires at least one regressor beyond the intercept"
       )
     }
     if (all(apply(Z, 2, stats::var) <= .Machine$double.eps)) {
-      std_error(
+      .std_error(
         "rassumption_violation",
         assumption = "Harvey test requires variability in the variance regressors"
       )
     }
   }
 
-  e <- stats::residuals(model)
+  e <- rpearson_residuals(model)
   if (any(!is.finite(e))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Harvey test requires finite residuals"
     )
@@ -141,14 +177,14 @@ performHarveyTest <- function(model,
   df_den <- aux_model$df.residual
 
   if (df_num < 1L) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Harvey auxiliary regression retained no variance regressors after rank reduction"
     )
   }
 
   if (df_den <= 0) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Harvey auxiliary regression requires positive residual degrees of freedom"
     )

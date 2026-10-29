@@ -1,5 +1,7 @@
 ## ----setup, include=FALSE-----------------------------------------------------
 library(heteroTests)
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 
 ## -----------------------------------------------------------------------------
 head(quakes)
@@ -10,7 +12,7 @@ summary(base_model)
 
 ## -----------------------------------------------------------------------------
 hd <- HeteroDiagnostic(base_model, quakes)
-test(hd)
+runDiagnostics(hd$model, hd$data)
 plot(hd)
 
 ## -----------------------------------------------------------------------------
@@ -19,4 +21,7 @@ summary(wls_model)
 
 ## -----------------------------------------------------------------------------
 compareModelDiagnostics(list(base_model, wls_model))
+
+## -----------------------------------------------------------------------------
+performVarianceFormTest(wls_model)
 

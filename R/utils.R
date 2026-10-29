@@ -2,14 +2,39 @@
 
 #' Validate model argument
 #'
-#' Checks that `model` is of class `lm` or `glm`.
+#' Checks that `model` is of class `lm` or `glm`. With `enhanced = TRUE` it
+#' also runs the soft checks of the deprecated `checkModelEnhanced()`: it warns
+#' when the residual degrees of freedom fall below six, when a near-perfect fit
+#' is detected (R\eqn{^2 > 0.999}), or, when `data` is given, when a variance
+#' inflation factor exceeds 10 (Belsley et al., 1980).
+#'
+#' It does not check whether a test accepts `model`: it accepts a binomial or a
+#' Poisson `glm`, a `survey::svyglm()` fit and a fit with a zero weight,
+#' which the tests refuse, each with its own message. Which test accepts which
+#' model is set out in [test_results], under *Supported models*.
+#'
+#' The R-squared is that of the least-squares fit: for a `glm` with the
+#' Gaussian family and the identity link, that of the equivalent `lm`, which
+#' `summary()` of a `glm` does not report; for any other `glm` it is not
+#' checked. Before 0.16.0, `enhanced = TRUE` stopped on any `glm` with "missing
+#' value where TRUE/FALSE needed".
 #'
 #' @param model An object to check.
+#' @param data Optional `data.frame` used when fitting `model`. With
+#'   `enhanced = TRUE` it enables the multicollinearity check through
+#'   [performVIFDiagnostic()].
+#' @param enhanced Logical. `FALSE`, the default, checks the class only.
 #' @return Invisible `model` if valid, otherwise an error is thrown.
+#' @references
+#' Belsley, D. A., Kuh, E., & Welsch, R. E. (1980). *Regression Diagnostics:
+#' Identifying Influential Data and Sources of Collinearity*. Wiley.
 #' @export
-checkModel <- function(model) {
+checkModel <- function(model, data = NULL, enhanced = FALSE) {
   if (!inherits(model, c("lm", "glm"))) {
-    std_error("invalid_model")
+    .std_error("invalid_model")
+  }
+  if (isTRUE(enhanced)) {
+    .check_model_soft(model, data)
   }
   invisible(model)
 }
@@ -118,8 +143,16 @@ ht_set_log_level <- function(level = c("INFO", "WARN", "ERROR", "SILENT")) {
 #'   entries are discarded first. Use `Inf` to keep all entries.
 #' @param sink Optional file path or connection to mirror log output.
 #' @return Invisibly returns `NULL`.
+#' @section Deprecated:
+#' Deprecated since 0.14.0, with [ht_log_history()] and
+#' [ht_clear_log_history()]: of the logging functions only
+#' [ht_set_log_level()] stays exported after 1.0.0. They still work and warn.
 #' @export
 ht_enable_log_capture <- function(enabled = TRUE, max_entries = 1000L, sink = NULL) {
+  .Deprecated(
+    old = "ht_enable_log_capture",
+    msg = .ht_internal_deprecation("ht_enable_log_capture")
+  )
   .ht_log_state$capture <- isTRUE(enabled)
   if (is.finite(max_entries) && max_entries <= 0L) {
     max_entries <- 1000L
@@ -138,8 +171,12 @@ ht_enable_log_capture <- function(enabled = TRUE, max_entries = 1000L, sink = NU
 #' log entries captured via [ht_enable_log_capture()].
 #'
 #' @return A data frame with columns `timestamp`, `level` and `message`.
+#' @section Deprecated:
+#' Deprecated since 0.14.0; see [ht_enable_log_capture()]. It still works and
+#' warns.
 #' @export
 ht_log_history <- function() {
+  .Deprecated(old = "ht_log_history", msg = .ht_internal_deprecation("ht_log_history"))
   .ht_log_state$history
 }
 
@@ -148,8 +185,12 @@ ht_log_history <- function() {
 #' Removes all stored log entries accumulated via [ht_enable_log_capture()].
 #'
 #' @return Invisibly returns `NULL`.
+#' @section Deprecated:
+#' Deprecated since 0.14.0; see [ht_enable_log_capture()]. It still works and
+#' warns.
 #' @export
 ht_clear_log_history <- function() {
+  .Deprecated(old = "ht_clear_log_history", msg = .ht_internal_deprecation("ht_clear_log_history"))
   .ht_log_state$history <- .ht_log_state$history[0, , drop = FALSE]
   invisible(NULL)
 }
@@ -184,17 +225,25 @@ safe_lm <- function(formula, data, ..., .recover = TRUE) {
   )
 }
 
-#' Validate data argument
+#' Validate data argument (deprecated)
 #'
 #' Ensures that `data` is a data.frame. Used internally for input
 #' validation across the package.
+#'
+#' Deprecated since 0.14.0: an internal helper of the package, which leaves the
+#' exports in 1.0.0. It still works and warns.
 #'
 #' @param data Object to check.
 #' @return Invisible `data` if valid, otherwise an error is thrown.
 #' @export
 checkData <- function(data) {
+  .Deprecated(old = "checkData", msg = .ht_internal_deprecation("checkData"))
+  .check_data(data)
+}
+
+.check_data <- function(data) {
   if (!is.data.frame(data)) {
-    std_error("invalid_data")
+    .std_error("invalid_data")
   }
   invisible(data)
 }
@@ -304,4 +353,278 @@ rlog_squared_residuals <- function(e, test_name) {
     )
   }
   log(pmax(e2, floor_value))
+}
+
+#' Prior weights of a weighted least-squares fit
+#'
+#' Returns the weights of a weighted `lm`, and `NULL` for an unweighted fit or
+#' for a `glm`, whose prior weights are not inverse error variances.
+#'
+#' Prior weights and working weights. An `lm` keeps the weights it was given
+#' in `model$weights`: they are prior weights, and they stay fixed. A `glm`
+#' keeps them in `model$prior.weights`, and `model$weights` holds the working
+#' weights of the last iteration of iteratively reweighted least squares,
+#' \eqn{w_i (d\mu_i / d\eta_i)^2 / V(\mu_i)}. With the Gaussian family and
+#' the identity link the derivative and the variance function are 1, so the
+#' working weights are the prior weights; with any other family or link they
+#' depend on the fitted means, and the tests refuse such a `glm`. This
+#' function never returns the working weights: it reads `model$weights` of an
+#' `lm` only. [rleast_squares_weights()] reads the prior weights of a
+#' Gaussian `glm`. A `MASS::rlm()` fit is an `lm` whose `weights` are its case
+#' weights, all 1 when none were given, and whose robustness weights are in
+#' `w`, which nothing reads.
+#'
+#' @param model A fitted model.
+#' @return Numeric vector of weights, or `NULL`.
+#' @keywords internal
+#' @noRd
+rprior_weights <- function(model) {
+  if (!inherits(model, "lm") || inherits(model, "glm")) {
+    return(NULL)
+  }
+  model$weights
+}
+
+#' Prior weights of a least-squares fit, lm or Gaussian glm
+#'
+#' A `glm` with the Gaussian family and the identity link is a least-squares
+#' fit, and its prior weights are the weights of the equivalent
+#' `lm(..., weights = w)`: inverse error variances up to a constant. The tests
+#' that refit with the weights, or refuse a weighted fit, read them here, so
+#' that such a `glm` gives what that `lm` gives (decided on 2026-10-15).
+#' Before 0.15.0 they read [rprior_weights()], which returns none for a `glm`,
+#' and took a weighted `glm` for an unweighted fit.
+#'
+#' A `glm` whose prior weights are all 1 is an unweighted fit, as
+#' `glm()` records no weights as weights of 1. A `glm` of another family or
+#' link, and a `survey::svyglm()` fit, are refused before this is called; for
+#' them it returns `NULL`, as [rprior_weights()] does.
+#'
+#' It reads `model$prior.weights`, the weights the `glm` was given, and not
+#' `model$weights`, the working weights of its last iteration. For the
+#' Gaussian family with the identity link the two are equal; for the fits
+#' that are refused they are not (see [rprior_weights()]).
+#'
+#' @param model A fitted model.
+#' @return Numeric vector of weights, or `NULL`.
+#' @keywords internal
+#' @noRd
+rleast_squares_weights <- function(model) {
+  if (!inherits(model, "glm")) {
+    return(rprior_weights(model))
+  }
+  fam <- tryCatch(stats::family(model), error = function(e) NULL)
+  least_squares <- !inherits(model, "svyglm") && !is.null(fam) &&
+    identical(fam$family, "gaussian") && identical(fam$link, "identity")
+  # The prior weights, never model$weights, which holds the working weights.
+  w <- model$prior.weights
+  if (!least_squares || is.null(w) || all(w == 1)) {
+    return(NULL)
+  }
+  # lm() keeps its weights without names, as.vector(model.weights(mf)).
+  as.vector(w)
+}
+
+#' R-squared of a least-squares fit, lm or Gaussian glm
+#'
+#' The checks of the model refuse a fit whose R-squared exceeds 0.999
+#' ([rvalidateModelInputs()]), and `checkModel(enhanced = TRUE)` warns about
+#' one. They read it from `summary()`, which reports none for a `glm`: before
+#' 0.16.0 a Gaussian `glm` with the identity link escaped the refusal that the
+#' same `lm` met, and `checkModel(enhanced = TRUE)` stopped on any `glm` with
+#' "missing value where TRUE/FALSE needed".
+#'
+#' For such a `glm` it is the R-squared `summary.lm()` computes, applied to the
+#' `glm` itself. For this family and link the components `summary.lm()` reads
+#' hold what they hold in the equivalent `lm(..., weights = w)`, up to
+#' rounding: the fitted values, the residuals (the working residuals
+#' \eqn{y_i - \hat\mu_i}), the weights (the working weights, which are the
+#' prior weights), the offset, the terms and the rank. So it reports what
+#' `summary()` of the `lm` reports, in every version of R: since R 4.3.0
+#' `summary.lm()` takes the offset out of the fitted values before it computes
+#' the explained sum of squares, and before it did not. Without an offset it is
+#' one minus the ratio of the deviance of the `glm` to its null deviance.
+#'
+#' @param model A fitted model.
+#' @return Numeric scalar, or `NA` for a model that is not a least-squares fit
+#'   or whose R-squared cannot be read.
+#' @keywords internal
+#' @noRd
+rleast_squares_r_squared <- function(model) {
+  summarise <- summary
+  if (inherits(model, "glm")) {
+    fam <- tryCatch(stats::family(model), error = function(e) NULL)
+    least_squares <- !inherits(model, "svyglm") && !is.null(fam) &&
+      identical(fam$family, "gaussian") && identical(fam$link, "identity")
+    if (!least_squares) {
+      return(NA_real_)
+    }
+    summarise <- stats::summary.lm
+  }
+  r_sq <- tryCatch(summarise(model)$r.squared, error = function(e) NULL)
+  if (is.numeric(r_sq) && length(r_sq) == 1L) r_sq else NA_real_
+}
+
+#' Residuals on the scale a variance test should see
+#'
+#' `lm(..., weights = w)` states that \eqn{\mathrm{Var}(\varepsilon_i) =
+#' \sigma^2 / w_i}. The raw residuals of such a fit are heteroscedastic *by
+#' assumption*: a test computed from them rejects whenever the weights vary,
+#' whether or not they are right. The residuals that are homoscedastic when the
+#' weights are right are the Pearson residuals \eqn{\sqrt{w_i}\, e_i}, the
+#' residuals of the equivalent unweighted fit of \eqn{\sqrt{w_i}\, y_i} on
+#' \eqn{\sqrt{w_i}\, x_i}. This is the choice `car::ncvTest()` and
+#' `plot.lm()` make.
+#'
+#' For an unweighted fit the result is `stats::residuals(model)` exactly, with
+#' the same names and the same padding under `na.exclude`.
+#'
+#' A zero weight removes an observation from the fit, and its Pearson residual
+#' is an artificial zero that would be counted as an observation by everything
+#' downstream. Such fits are refused rather than tested, an `lm` and a
+#' Gaussian `glm` alike: the weights are read by [rleast_squares_weights()],
+#' the prior weights of either. Before 0.16.0 they were read by
+#' [rprior_weights()], which returns none for a `glm`, so a Gaussian `glm`
+#' with a zero prior weight was tested with that artificial zero.
+#'
+#' The residuals of a Gaussian `glm` are `stats::residuals(model)`, its
+#' deviance residuals, which for the identity link are
+#' \eqn{\sqrt{w_i}\,(y_i - \hat\mu_i)}, the Pearson residuals up to rounding;
+#' they are what the tests read before 0.16.0, so its values do not change.
+#'
+#' @param model A fitted model.
+#' @return Numeric vector of residuals.
+#' @keywords internal
+#' @noRd
+rpearson_residuals <- function(model) {
+  rrefuse_survey_fit(model)
+  w <- rleast_squares_weights(model)
+  if (is.null(w)) {
+    return(stats::residuals(model))
+  }
+  rrefuse_zero_weights(w)
+  if (inherits(model, "glm")) {
+    return(stats::residuals(model))
+  }
+  stats::residuals(model, type = "pearson")
+}
+
+#' Refuse prior weights that are zero or not finite
+#'
+#' @param w The prior weights of the fit, from [rleast_squares_weights()].
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rrefuse_zero_weights <- function(w) {
+  if (is.null(w) || (all(is.finite(w)) && all(w > 0))) {
+    return(invisible(NULL))
+  }
+  stop(
+    "The model was fitted with zero or non-finite weights. Observations ",
+    "with zero weight are not part of the fit, so the diagnostics cannot ",
+    "treat them as residuals. Refit on the observations with positive ",
+    "weight.",
+    call. = FALSE
+  )
+}
+
+#' Refuse a weighted fit in a procedure that refits without the weights
+#'
+#' Some procedures refit the mean model without the weights, or under a
+#' different loss. On a weighted fit that describes a different model from the
+#' one supplied, so they refuse it, as `rbootstrap_test_statistic()` refuses a
+#' `glm`. The resampling tests refit with the weights instead; see
+#' `rrefit_lm()`. A Gaussian `glm` with prior weights is a weighted fit too,
+#' and is refused with the same message, through [rleast_squares_weights()].
+#'
+#' @param model A fitted model.
+#' @param what Character scalar naming the calling procedure.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rrefuse_weighted_fit <- function(model, what) {
+  if (is.null(rleast_squares_weights(model))) {
+    return(invisible(NULL))
+  }
+  stop(
+    what, " does not support weighted fits: it refits the mean model without ",
+    "the weights, which would test a different model from the one supplied. ",
+    "Use a test computed from the residuals, such as performKoenkerTest() or ",
+    "performWhiteTest(), or the wild bootstrap of performWildBootstrapTest(); ",
+    "on a weighted fit those use the Pearson residuals.",
+    call. = FALSE
+  )
+}
+
+#' Refit a linear model to a regenerated sample
+#'
+#' The resampling tests regenerate the response, or the rows, and refit the
+#' model. The refit has to carry the weights of a weighted fit, and the offset
+#' when the model was given one as an argument; an offset written in the
+#' formula is evaluated again from `data`. `lm()` looks a name passed as
+#' `weights` or `offset` up in `data` and then in the environment of the
+#' formula, never in the function that calls it, so the vectors are put into
+#' the call itself, where no column of `data` can stand in for them.
+#'
+#' @param formula The model formula.
+#' @param data Data frame holding the regenerated sample.
+#' @param weights Prior weights, one per row of `data`, or `NULL` for an
+#'   unweighted fit.
+#' @param offset Offset given to the model as an argument, one value per row of
+#'   `data`, or `NULL`.
+#' @return The `lm` fit.
+#' @keywords internal
+#' @noRd
+rrefit_lm <- function(formula, data, weights = NULL, offset = NULL) {
+  fit_call <- as.call(list(quote(stats::lm), formula = quote(formula), data = quote(data)))
+  if (!is.null(weights)) {
+    fit_call$weights <- weights
+  }
+  if (!is.null(offset)) {
+    fit_call$offset <- offset
+  }
+  eval(fit_call)
+}
+
+#' Offset a model was given as an argument
+#'
+#' `lm(..., offset = o)` keeps `o` in the model frame as `(offset)`. An offset
+#' written in the formula, `offset(o)`, is a term of the formula instead, and a
+#' refit from the formula evaluates it again.
+#'
+#' @param model A fitted model.
+#' @return Numeric vector, one value per fitted observation, or `NULL`.
+#' @keywords internal
+#' @noRd
+roffset_argument <- function(model) {
+  frame <- tryCatch(stats::model.frame(model), error = function(e) NULL)
+  if (is.null(frame) || !"(offset)" %in% names(frame)) {
+    return(NULL)
+  }
+  as.vector(frame[["(offset)"]])
+}
+
+#' Refuse a model fitted to a survey design
+#'
+#' `residuals()` of a `survey::svyglm()` fit are multiplied by the square roots
+#' of the sampling weights. Those are not precision weights, so a test computed
+#' from such residuals rejects a homoscedastic model whenever the weights vary
+#' with the regressors.
+#'
+#' @param model A fitted model.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rrefuse_survey_fit <- function(model) {
+  if (!inherits(model, "svyglm")) {
+    return(invisible(NULL))
+  }
+  stop(
+    "The model is a survey::svyglm() fit, whose residuals are scaled by the ",
+    "sampling weights. The diagnostics would read those weights as precision ",
+    "weights and reject a homoscedastic model whenever they vary with the ",
+    "regressors. The package has no design-based test; see ",
+    "?runSurveyHeteroTests for what it can and cannot say about survey data.",
+    call. = FALSE
+  )
 }

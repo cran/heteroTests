@@ -4,14 +4,40 @@
 \alias{checkModel}
 \title{Validate model argument}
 \usage{
-checkModel(model)
+checkModel(model, data = NULL, enhanced = FALSE)
 }
 \arguments{
 \item{model}{An object to check.}
+
+\item{data}{Optional \code{data.frame} used when fitting \code{model}. With
+\code{enhanced = TRUE} it enables the multicollinearity check through
+\code{\link[=performVIFDiagnostic]{performVIFDiagnostic()}}.}
+
+\item{enhanced}{Logical. \code{FALSE}, the default, checks the class only.}
 }
 \value{
 Invisible \code{model} if valid, otherwise an error is thrown.
 }
 \description{
-Checks that \code{model} is of class \code{lm} or \code{glm}.
+Checks that \code{model} is of class \code{lm} or \code{glm}. With \code{enhanced = TRUE} it
+also runs the soft checks of the deprecated \code{checkModelEnhanced()}: it warns
+when the residual degrees of freedom fall below six, when a near-perfect fit
+is detected (R\eqn{^2 > 0.999}), or, when \code{data} is given, when a variance
+inflation factor exceeds 10 (Belsley et al., 1980).
+}
+\details{
+It does not check whether a test accepts \code{model}: it accepts a binomial or a
+Poisson \code{glm}, a \code{survey::svyglm()} fit and a fit with a zero weight,
+which the tests refuse, each with its own message. Which test accepts which
+model is set out in \link{test_results}, under \emph{Supported models}.
+
+The R-squared is that of the least-squares fit: for a \code{glm} with the
+Gaussian family and the identity link, that of the equivalent \code{lm}, which
+\code{summary()} of a \code{glm} does not report; for any other \code{glm} it is not
+checked. Before 0.16.0, \code{enhanced = TRUE} stopped on any \code{glm} with "missing
+value where TRUE/FALSE needed".
+}
+\references{
+Belsley, D. A., Kuh, E., & Welsch, R. E. (1980). \emph{Regression Diagnostics:
+Identifying Influential Data and Sources of Collinearity}. Wiley.
 }

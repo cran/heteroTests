@@ -51,7 +51,7 @@ launchDiagnosticDashboard <- function(model, data) {
   }
 
   available_tests <- .test_factory$get_available()
-  default_tests <- intersect(c("white", "breusch_pagan"), available_tests)
+  default_tests <- intersect(c("white", "koenker"), available_tests)
   if (length(default_tests) == 0) {
     default_tests <- head(available_tests, 3L)
   }
@@ -533,7 +533,7 @@ launchDiagnosticDashboard <- function(model, data) {
 
     diagnostic_plots <- shiny::reactive({
       shiny::req(model_store())
-      plotDiagnosticSuiteEnhanced(model_store())
+      plotDiagnosticSuite(model_store(), enhanced = TRUE)
     })
 
     lapply(names(plot_labels), function(name) {

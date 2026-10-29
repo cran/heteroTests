@@ -23,7 +23,7 @@ test_that("plotDiagnosticSuite returns list of plots", {
   lapply(res, expect_ggplot)
 })
 
-test_that("plotBeforeAfter overlays models", {
+test_that("plotBeforeAfter draws both models", {
   model <- lm(y ~ x1 + x2, data = data_heterosced)
   wls <- fitWLS(model)
   p <- plotBeforeAfter(model, wls)
@@ -38,15 +38,15 @@ test_that("additional plot functions return ggplot", {
 })
 
 
-test_that("plotResidualsFittedEnhanced returns ggplot", {
+test_that("plotResidualsFitted(enhanced = TRUE) returns ggplot", {
   model <- lm(y ~ x1 + x2, data = data_heterosced)
-  p <- plotResidualsFittedEnhanced(model)
+  p <- plotResidualsFitted(model, enhanced = TRUE)
   expect_s3_class(p, "ggplot")
 })
 
-test_that("plotDiagnosticSuiteEnhanced returns list of plots", {
+test_that("plotDiagnosticSuite(enhanced = TRUE) returns list of plots", {
   model <- lm(y ~ x1 + x2, data = data_heterosced)
-  res <- plotDiagnosticSuiteEnhanced(model)
+  res <- plotDiagnosticSuite(model, enhanced = TRUE)
   expect_true(is.list(res))
   expect_named(res, c("residuals_fitted", "spread_level",
                       "density", "qq", "bubble_variance"))

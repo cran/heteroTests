@@ -5,6 +5,8 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 
 ## -----------------------------------------------------------------------------
 quakes_model <- lm(stations ~ mag + depth, data = quakes)
@@ -53,7 +55,7 @@ summary(survey_model)
 
 ## -----------------------------------------------------------------------------
 survey_diag <- HeteroDiagnostic(survey_model, hetero_data)
-test(survey_diag, tests = c("white", "breusch_pagan"))
+runDiagnostics(survey_diag$model, survey_diag$data, tests = c("white", "breusch_pagan"))
 performGlejserTest(survey_model, hetero_data, "x")
 
 ## ----fig.width=6, fig.height=4------------------------------------------------

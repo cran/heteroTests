@@ -8,10 +8,16 @@
 #'
 #' @param model A fitted [stats::lm] object whose residuals will be tested for
 #'   heteroscedasticity.
+#' @param data Optional data frame the model was fitted to, in which
+#'   `var_formula` is evaluated, as in [performCookWeisbergTest()]. When
+#'   `NULL`, the default, the model frame of `model` is used.
 #' @param var_formula Optional one-sided [stats::formula] giving the variance
-#'   model, evaluated in the model frame of `model` (for example `~ x1 + x2`).
+#'   model, evaluated in `data` (for example `~ x1 + x2`).
 #'   When `NULL` (the default) the fitted values are used as the single variance
-#'   regressor, matching the default behaviour of `car::ncvTest()`.
+#'   regressor, matching the default behaviour of `car::ncvTest()`. Before
+#'   0.15.0 `var_formula` was the second argument: a formula passed there by
+#'   position is still read as `var_formula`, with a warning; that form stops
+#'   working in 1.0.0.
 #'
 #' @return An object of class \code{htest} containing the chi-squared
 #'   score statistic, its degrees of freedom, and the upper-tail p-value.
@@ -34,6 +40,12 @@
 #' under normality, the test is sensitive to non-normal errors. Use
 #' [performKoenkerTest()] for the studentized variant, which replaces that
 #' constant with a consistent estimate and is robust to non-normal kurtosis.
+#'
+#' @section Weighted fits:
+#' On a fit with weights the test is computed from the Pearson residuals
+#' \eqn{\sqrt{w_i}\, e_i}, so it tests whether the weights are adequate; see
+#' the section on weighted fits in [performKoenkerTest()], which also covers
+#' weights estimated by [fitWLS()].
 #'
 #' @references
 #' Cook, R. D., & Weisberg, S. (1983). Diagnostics for heteroscedasticity in
@@ -68,19 +80,60 @@
 #' [performCookWeisbergTest()] for the fitted-value special case,
 #' [performKoenkerTest()] for the studentized variant, and [performBPTest()] for
 #' the Breusch–Pagan test against the full regressor set.
-performNCVTest <- function(model, var_formula = NULL) {
-  rvalidateModelInputs(model, test_name = "NCV", min_obs = 10L)
+#' @section Deprecated:
+#' `performNCVTest()` is deprecated since 0.14.0: use
+#' [performCookWeisbergTest()], which gained `var_formula` and is the one entry
+#' point for the Cook–Weisberg score test. `performNCVTest(model, var_formula)`
+#' with a variance formula returns what `performCookWeisbergTest(model,
+#' var_formula)` returns; without one the two return the same statistic,
+#' degrees of freedom and p-value, and `performCookWeisbergTest()` labels the
+#' result as the Cook–Weisberg test. The old name still works, returns what it
+#' returned and warns.
+performNCVTest <- function(model, data = NULL, var_formula = NULL) {
+  rrefuse_non_gaussian_glm(model, "performNCVTest")
+  .Deprecated("performCookWeisbergTest", old = "performNCVTest")
+  if (inherits(data, "formula") && missing(var_formula)) {
+    rwarn_positional_call(
+      "performNCVTest", substitute(model), list(var_formula = substitute(data))
+    )
+    var_formula <- data
+    data <- NULL
+  }
+  ctx <- rcontext_second_formula(model, data, list(var_formula), "performNCVTest", "NCV")
+  .ncv_test(model, var_formula, data, ctx)
+}
+
+# The implementation behind the deprecated performNCVTest(), the "ncv"
+# registry name and performCookWeisbergTest(); unchanged in 0.14.0. Since
+# 0.15.0 `var_formula` can be evaluated in `data` rather than in the model
+# frame; with `data = NULL` the computation is the one of 0.14.0.
+#
+# Since 0.16.0 the callers build the model context (`ctx`) first, and the fit
+# must reproduce itself (rvalidate_model_context()). The variables of
+# `var_formula` are read at the rows of `data` the alignment confirmed, in the
+# order of the fit, or without `data` from the model frame, where it holds
+# them under their own names, and never from the workspace
+# (rcontext_formula_rows()): before, with `data = NULL`, a variable that
+# neither held was found in the environment of the formula (R3, decision 9).
+# Without a context, as from the internal benchmarks, the residuals and
+# fitted values are read from `model`, which is all the test without
+# `var_formula` reads.
+.ncv_test <- function(model, var_formula = NULL, data = NULL, ctx = NULL) {
+  rvalidateModelInputs(model, test_name = "NCV", min_obs = 10L, allow_aliased = TRUE)
+  if (!is.null(ctx)) {
+    rvalidate_model_context(ctx)
+  }
 
   ht_log("INFO", "Running NCV score test")
 
-  e <- stats::residuals(model)
+  e <- rpearson_residuals(model)
   n <- length(e)
 
   # Cook and Weisberg scale by the ML variance estimate, i.e. RSS / n rather
   # than RSS / (n - p); car::ncvTest() does the same.
   sigma2_ml <- sum(e^2) / n
   if (!is.finite(sigma2_ml) || sigma2_ml <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "NCV test requires a positive residual variance"
     )
@@ -94,15 +147,27 @@ performNCVTest <- function(model, var_formula = NULL) {
     if (!inherits(var_formula, "formula") || length(var_formula) != 2L) {
       stop("`var_formula` must be a one-sided formula, e.g. ~ x1 + x2.", call. = FALSE)
     }
-    mf <- tryCatch(stats::model.frame(model), error = function(e) NULL)
-    if (is.null(mf)) {
-      stop("`var_formula` requires a model frame, which could not be recovered from `model`.", call. = FALSE)
+    if (is.null(ctx)) {
+      ctx <- rcontext_second_formula(model, data, list(var_formula), "performNCVTest", "NCV")
     }
-    # Drop the fitted model's terms attribute before rebuilding a model frame
-    # for the variance formula; model.matrix() otherwise validates the new
-    # formula against the mean model's terms and errors out.
-    plain <- as.data.frame(mf)
-    attr(plain, "terms") <- NULL
+    # The model frame without `data`, stripped of the terms of the mean model,
+    # which model.matrix() would otherwise check the variance formula against;
+    # with `data`, the rows the alignment confirmed, in the order of the fit.
+    plain <- rcontext_formula_rows(ctx, data, var_formula)
+    if (!is.null(data)) {
+      # As before 0.16.0: the checks of the model for "Cook-Weisberg test",
+      # whose warnings name it, the warning on the rows of `data` with a
+      # missing value in a variable of `var_formula`, and the refusal of such a
+      # value at an observation of the fit, which now names the variable
+      # (decision 8). Nothing is dropped before the rows are matched.
+      rvalidateModelInputs(model, test_name = "Cook-Weisberg test", min_obs = 10L,
+                           allow_aliased = TRUE)
+      read <- intersect(setdiff(all.vars(var_formula), "."), names(data))
+      rwarn_incomplete_rows(data, NULL, also = read)
+      for (v in read) {
+        rstop_missing_variable(ctx, plain[[v]], v, "var_formula", "Cook-Weisberg test")
+      }
+    }
     aux_frame <- stats::model.frame(var_formula, data = plain)
     Z <- stats::model.matrix(var_formula, data = aux_frame)
     Z <- Z[, colnames(Z) != "(Intercept)", drop = FALSE]
@@ -122,7 +187,7 @@ performNCVTest <- function(model, var_formula = NULL) {
   }
 
   if (all(apply(Z, 2, stats::var) <= .Machine$double.eps)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "NCV test requires variability in the variance regressors"
     )
@@ -140,7 +205,7 @@ performNCVTest <- function(model, var_formula = NULL) {
   # with degrees of freedom for columns that lm() aliased away.
   df <- aux_model$rank - 1L
   if (df < 1L) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "NCV auxiliary regression retained no variance regressors after rank reduction"
     )

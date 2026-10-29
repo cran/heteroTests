@@ -7,6 +7,10 @@
 #'
 #' @param model A fitted [stats::lm] object providing residuals and fitted values
 #'   for the diagnostic.
+#' @param data Optional data frame the model was fitted to. When `NULL`, the
+#'   default, the model frame of `model` is used. The statistic is computed
+#'   from the residuals and fitted values of `model`, so `data` does not change
+#'   the result; it is accepted so that every test takes `(model, data, ...)`.
 #'
 #' @return An object of class \code{htest} containing the t statistic for the
 #'   rank correlation and its associated p-value.
@@ -40,16 +44,23 @@
 #' @seealso
 #' [performNCVTest()] and [performSpreadLevelTest()] provide related tests based
 #' on monotonic variance patterns.
-performSpearmanTest <- function(model) {
-  rvalidateModelInputs(model, test_name = "Spearman rank", min_obs = 10L)
+performSpearmanTest <- function(model, data = NULL) {
+  rrefuse_non_gaussian_glm(model, "performSpearmanTest")
+  # The model context (R/model_context.R) refuses a model frame that
+  # `model = FALSE` rebuilt from data changed after the fit. The test reads
+  # nothing from `data`, which is matched to the observations of the fit as by
+  # every test built on the context (decision 31).
+  rcheck_data_argument(data, "performSpearmanTest")
+  ctx <- rmodel_context(model, data, fn = "performSpearmanTest", test_label = "Spearman rank")
+  rvalidateModelInputs(model, test_name = "Spearman rank", min_obs = 10L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_data <- tryCatch(stats::model.frame(model), error = function(e) NULL)
-  requirements <- rvalidateTestRequirements("spearman", model = model, data = model_data)
+  requirements <- rvalidateTestRequirements("spearman", model = model, data = ctx$frame)
   rprocessValidationResult(requirements)
 
   ht_log("INFO", "Running Spearman rank correlation test")
 
-  abs_res <- abs(stats::residuals(model))
+  abs_res <- abs(rpearson_residuals(model))
   fit <- stats::fitted(model)
 
   if (length(abs_res) != length(fit)) {
@@ -57,14 +68,14 @@ performSpearmanTest <- function(model) {
   }
 
   if (stats::var(abs_res) <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Spearman test requires variability in absolute residuals"
     )
   }
 
   if (stats::var(fit) <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Spearman test requires variability in fitted values"
     )
@@ -72,7 +83,7 @@ performSpearmanTest <- function(model) {
 
   rho <- stats::cor(abs_res, fit, method = "spearman")
   if (is.na(rho) || abs(rho) >= 1) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Spearman correlation could not be computed due to degeneracy"
     )
@@ -85,7 +96,7 @@ performSpearmanTest <- function(model) {
   structure(
     list(
       statistic = c(t = t_statistic),
-      parameter = n - 2,
+      parameter = c(df = n - 2),
       p.value = p_value,
       method = "Spearman rank correlation test for heteroscedasticity",
       data.name = deparse(stats::formula(model)),

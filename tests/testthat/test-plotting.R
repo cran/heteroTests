@@ -107,10 +107,10 @@ test_that("plotBubbleVariance handles errors correctly", {
 # Enhanced Plot Functions
 # =============================================================================
 
-test_that("plotResidualsFittedEnhanced works correctly", {
+test_that("plotResidualsFitted(enhanced = TRUE) works correctly", {
   test_obj <- create_test_model()
   
-  p <- plotResidualsFittedEnhanced(test_obj$model)
+  p <- plotResidualsFitted(test_obj$model, enhanced = TRUE)
   expect_ggplot(p)
   
   # Should have enhanced features
@@ -125,10 +125,10 @@ test_that("plotResidualsFittedEnhanced works correctly", {
   expect_type(p$data$influential, "logical")
 })
 
-test_that("plotDiagnosticSuiteEnhanced works correctly", {
+test_that("plotDiagnosticSuite(enhanced = TRUE) works correctly", {
   test_obj <- create_test_model()
   
-  plots <- plotDiagnosticSuiteEnhanced(test_obj$model)
+  plots <- plotDiagnosticSuite(test_obj$model, enhanced = TRUE)
   expect_type(plots, "list")
   
   # Should contain expected plots
@@ -175,11 +175,16 @@ test_that("plotBeforeAfter works correctly", {
   
   # Should have appropriate labels
   expect_equal(p$labels$title, "Before/After Residual Comparison")
-  expect_equal(p$labels$colour, "Model")
-  
-  # Should have data from both models
+
+  # Should have data from both models, one panel each
   expect_true(nrow(p$data) > 0)
   expect_true("model" %in% names(p$data))
+  expect_setequal(unique(p$data$model), c("original", "remedied"))
+  expect_identical(
+    levels(p$data$panel),
+    c("Original", "Remedied (weighted residuals)")
+  )
+  expect_identical(names(p$facet$params$facets), "panel")
   expect_true(all(c("original", "remedied") %in% p$data$model))
   
   # Should have residuals from both models
@@ -320,7 +325,7 @@ test_that("enhanced plots have additional visual elements", {
   
   # Compare regular vs enhanced residuals fitted plot
   p_regular <- plotResidualsFitted(test_obj$model)
-  p_enhanced <- plotResidualsFittedEnhanced(test_obj$model)
+  p_enhanced <- plotResidualsFitted(test_obj$model, enhanced = TRUE)
   
   # Enhanced should have more aesthetic mappings
   enhanced_aes <- names(p_enhanced$mapping)

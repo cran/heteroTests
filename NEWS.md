@@ -1,5 +1,4181 @@
 # heteroTests News
 
+## 0.16.0
+
+0.16.0 moves the tests onto a model context and corrects the statistics found
+wrong on the way to 1.0.0. In the first seven of the eleven steps of the model
+context the tests of a model, but the resampling tests, read the response, the
+design, the residuals, the weights, the offset and the rank from one internal,
+validated object per call, built from the stored fit, and match the rows of
+`data` to the observations of the fit before they read anything from them,
+named data in any order and numbered data in the order of the fit, where they
+rebuilt the design from `data` or read `data` by position (*The model
+context*; the other four steps are planned for 0.17.0). White's test takes its
+degrees of freedom from the rank of its auxiliary regression with the
+intercept and refuses one that fits the squared residuals exactly; the caches
+follow a contract, set out on `?cachedTest`; `print()` and `summary()` of the
+results of `runHeteroTests()` lay them out as `summary.lm()` does; the
+streaming tests run only when asked for; White's, Koenker's and the
+Breusch-Pagan tests warn on fixed effects for small groups; and the
+Fligner-Killeen, Box's M, Szroeter, Pesaran and quantile regression tests,
+`runAdvancedDiagnostics()`, the Szroeter entry of `test_factory` and the
+advice for a small sample are corrected. No export or argument changes; the
+default of `chunk_threshold_mb` becomes `Inf`, and eight S3 methods are added
+for the suites. The documentation site moves to Material for MkDocs, and CI
+runs the suite once per job and the full matrix of the model context in one
+job.
+
+The changes in bold change what calls return. Through the model context a term
+computed from all the rows of the data, such as `I(x > median(x))` or
+`cut(x, quantile(x))`, is tested as the fit computed it, in every chunk of the
+streaming tests too; on a model with an offset the studentized Breusch-Pagan
+statistic, Goldfeld-Quandt and the quantile regression test give the value of
+that model, and RESET the nested F test of it; Goldfeld-Quandt and the
+quantile regression test fit the design of the fit; Harrison-McCabe takes the
+rank of the fit, at its tolerance; the tests that read a column of `data`
+beyond the model match a `gam` to its data by row name; the panel tests and
+the scatter diagnostic match `data` by name, and the random-effects test and
+the scatter diagnostic give the value of a fit that dropped rows; the tests
+computed from the model alone match `data` as every other test does, and a
+second formula is evaluated on the rows of the fit, its variables never read
+from the workspace; without `data`, `runHeteroTests()` runs White's and
+Koenker's tests on a fit whose weights or offset are a column of the data; the
+registered `"szroeter"` orders a `gam` with an `offset` argument by its fitted
+values with the offset, and `runHeteroTests(tests = "spatial_hetero")` runs on
+data it stopped on; and the tests refuse a fit whose coefficients, residuals
+or weights were changed after it was fitted, a fit with `model = FALSE` whose
+data changed after the fit, or are gone and are not given in a `data` that
+holds its rows, a multivariate `lm` in RESET and the Davidian-Carroll test, a
+fit with smooth terms in RESET, Goldfeld-Quandt, the quantile regression test
+and the studentized statistic, a fit whose model frame cannot be rebuilt under
+its levels in `bootstrapTestStatistic()` and the robust tests with
+`bootstrap = TRUE`, and a repeated pair of `id` and `time` in Pesaran's test,
+where they returned a value. Of the models the tests accept, a rank-deficient
+fit is tested on the estimable part of its design; a Gaussian `glm` with a
+zero prior weight, and a near-perfect one, are refused as the same `lm`;
+`performWhiteTestStreaming()`, `performHarrisonMcCabeTest()` and
+`performVarianceFormTest()` accept a Gaussian `glm` with the identity link;
+`fitWLS()` refits one as the `lm` it is and refuses any other `glm`;
+`performScatterDiagnostic()` refuses a `glm` that is not a least-squares fit
+and data that lack a variable of the model; the registry name `"ncv"` checks
+the data it is given; `runHeteroTests()` on a tidymodels workflow without
+`data` runs the tests on the model frame of the engine's fit; and the calls
+that go through the tests change with them. White's test counts one degree of
+freedom fewer where its auxiliary columns span the constant, keeps the columns
+`lm()` keeps on a nearly collinear auxiliary design, no longer depends on
+where its regressors are located, and refuses an auxiliary regression that
+fits the squared residuals exactly, where it returned the number of
+observations. A cached result is the result of its own call; the checks of the
+model are those of the model; a test that draws random numbers is never
+cached, and the check of normality draws its sample on every call;
+`runHeteroTests()` stores no call that fell back on a diagnostic the caches
+may not hold, and returns with the cache the suite it returns without it; and
+the names of the estimates of the quantile regression test do not depend on
+the options. `runHeteroTests()` runs the exact tests on data of any size by
+default. White's, Koenker's and the Breusch-Pagan tests warn when a term of
+the model that holds a factor has more levels than observations per level,
+with their values unchanged. And of the single tests, `performPesaranTest()`
+computes the statistic of an unbalanced panel from the periods each pair of
+units shares, as `plm::pcdtest()` does; `performFlignerKilleenTest()` ranks
+the deviations of repeated observations as tied, as in exact arithmetic;
+`performBoxMTest()` applies Box's correction factor with three groups or more,
+drops a level of `group` with no observation, and refuses a group with no more
+observations than variables, a group whose covariance matrix is singular and
+data with fewer than two groups; `performSzroeterTest()` takes the null mean
+and variance of its statistic from the design of the fit, and refuses a fit
+with one residual degree of freedom; the Breusch-Pagan entry of
+`runAdvancedDiagnostics()` is Koenker's studentized statistic with
+`auto_enhance = FALSE`, and `tests = "bp"` runs it; and
+`performQuantileRegressionTest()` gives a value on a model with a single
+regressor.
+
+### Pesaran's test on an unbalanced panel
+
+**`performPesaranTest()`, and so `runPanelTests()`, now compute the statistic
+of an unbalanced panel, whose units are not all observed at the same periods,
+from the periods each pair of units shares, as `plm::pcdtest()` computes it
+except where a correlation is undefined (below), where 0.16.0's development
+version refused such a panel and 0.15.0 stopped on it or returned a wrong
+value.** 0.15.0 filled a matrix of periods by units,
+and a unit observed at fewer periods than the panel holds stopped it with
+"number of items to replace is not a multiple of replacement length", or,
+when its number of periods divides that of the panel, had its residuals
+recycled over the periods it lacks. The development version refused such a
+panel with "needs a balanced panel" (*The model context*, below). On the 120
+observations of `contract_data()` (`tests/testthat/helper-test-recipes.R`)
+without the first five rows, unit 1 keeps 5 of its 10 periods:
+
+| `performPesaranTest(lm(y ~ x1 + x2, data = d), d, "id", "time")` | Result |
+| --- | --- |
+| 0.15.0 | 0.234 (p = 0.815), the residuals of unit 1 recycled over the periods it lacks |
+| 0.16.0's development version, before this change | Error: ``performPesaranTest() needs a balanced panel, every unit observed at the same periods, and the panel of the fit is unbalanced: 1 of its 12 units is observed at fewer of its 10 periods, id = 1 at 5 of them. ...`` |
+| Now | -0.373 (p = 0.709), the value of `plm::pcdtest(test = "cd", model = "pooling")` |
+
+The statistic is that of Pesaran (2004, Section 9, equation 31),
+`CD = sqrt(1 / P) sum_{i<j} sqrt(T_ij) rho_ij`, where `T_ij` is the number of
+periods at which units `i` and `j` are both observed, `rho_ij` the
+correlation of their residuals over those periods, each centred at its mean
+over them, and `P` the number of pairs that share two periods or more,
+`N (N - 1) / 2` when every pair does. A pair that shares fewer than two
+periods has no correlation, and is left out of the sum and of `P` with a
+warning, as `plm::pcdtest()` leaves it out; a panel in which no pair shares
+two periods is refused, of class `heteroTests_model_context_error`. A
+correlation that is not defined, the residuals of a unit constant over the
+periods of a pair, adds nothing to the sum and the pair stays in `P`, with a
+warning, as on a balanced panel, where `plm::pcdtest()` returns `NA`: on
+four units at periods 1 to 4 without the first and the last observation,
+with the response of unit 2 constant, `lm(y ~ 1)` gives 0.758, plm `NA`
+(the response drawn by `set.seed(4); sample(1:9, 16, TRUE)`). Compared
+with `plm::pcdtest()` on 252 panels of 5 to 30 units and 4 to 12 periods,
+228 of them unbalanced, the statistic and the p-value agree to `1e-10` in
+each of 5,040 comparisons, by at most 3.6e-15 and 3.9e-16: units that enter
+late, leave early or skip periods, 1, 3, 5, 10 or 20 rows missing at random,
+a unit observed at one period, and balanced panels; an `lm`, a weighted
+`lm` and a Gaussian `glm`, weighted or not, against `plm::pcdtest()` on their
+Pearson residuals, and the `lm` against its pooled fit too; the full data of a
+fit with `na.omit`; and each through `runPanelTests()`. The full data of a
+fit that dropped some rows of some units, which 0.15.0 refused for their
+number of rows, give the value of the fit to the complete rows: with `x2`
+missing in rows 3, 7 and 11 of `contract_data()`, 0.189 (p = 0.850),
+`plm::pcdtest()`'s on the rows of the fit.
+
+On a balanced panel the statistic is computed as before, and every value is
+`identical()` to before. A fit with `na.action = na.exclude` that dropped
+rows is read as before, by position, until the step of the model context
+that moves `na.exclude`: the panel of the rows of `data` it reads must be
+balanced, and an unbalanced one stays refused, with a message that now
+points to `na.omit`, on which the statistic of an unbalanced panel is
+computed. A fit with `na.exclude` that dropped no row is tested as any
+other, its panel balanced or not.
+
+### The Fligner-Killeen test and its ties
+
+**On data with repeated observations, observations with the same values of
+the model's variables such as integer responses or responses recorded with
+few digits, `performFlignerKilleenTest()` now ranks their deviations as
+tied, as in exact arithmetic, which can change its value a lot: on
+`lm(extra ~ group, data = sleep)` the statistic was 0.154 and is 0.213 (the
+p-value 0.695 and 0.645), and on `lm(breaks ~ tension, data = warpbreaks)`
+it was 3.44 and is 3.90 (0.179 and 0.142), the values of exact ties.** On
+continuous data it changes much less: in simulated fits by up to about 1e-2
+of the statistic at 20 observations, where the statistic is often near zero
+(by at most about 0.005 in absolute terms, and 2.2e-4 in the p-value), and
+by about 1e-5 of it at 100 or more, up to 2.4e-5 with a group whose
+residuals are far from zero (below).
+
+The test ranks the absolute deviations of the residuals from their group
+medians, and averages the ranks of equal values, but rounding broke ties in
+two places. It read the residuals an `lm` stores, which its QR decomposition
+rounds differently from one observation to the next: two observations with
+the same response and design row, equal in exact arithmetic, had residuals
+that differed in their last bits, and the test ranked them apart. In 20 fits
+of `rpois(n, 3)` on four groups the gaps reached 17 times
+`eps * max(abs(r))` at 60 observations and 6,900 times at 6,000, with
+`eps = .Machine$double.eps` and `r` the residuals. The test now computes the
+residuals observation by observation, `sqrt(w) * (y - X b - o)` with `X b`
+summed in the same order for every row, as the Gaussian `glm` computes them;
+for an `mgcv::gam()` fit `X` is its linear predictor matrix. Observations
+with the same values of the model's variables, weight and offset are then
+given one residual, that of the first of them, where their residuals agree
+to within rounding (64 times `eps` of the size of the numbers they are
+computed from), since a basis such as `poly()`, built with a QR
+decomposition of its own, can give them design rows that differ in their
+last bits: on 70 observations that repeat 30, `lm(y ~ poly(x, 3))` gave
+0.8001 before 0.16.0 and gives 0.91385, the value of
+`lm(y ~ x + I(x^2) + I(x^3))`. A term of the row position, such as
+`seq_along(x)` or `cumsum(x)`, gives such observations residuals that differ
+by much more, and keeps them apart. This needs the model's variables: it is
+done when `data` is given, or when the model frame holds them, as it holds a
+variable the model uses under its own name (`x`, not `poly(x, 3)`); on those
+70 observations `lm(y ~ poly(x, 3) + g)` gives 1.21547 with `data` and
+1.22684 without. And in a group of even size the two
+residuals in the middle lie at the same distance from the median, half their
+difference, a tie that the centring breaks by up to `eps * s`, with `s` the
+largest absolute residual of the group: deviations closer than
+`8 * eps * s`, with the smaller `s` of the two groups for deviations of
+different groups, are given the mean of their ranks. Where neither changes a
+rank, the residuals of the fit are passed to `stats::fligner.test()` as
+before, and the value is `identical()` to before.
+
+An `lm` and the Gaussian `glm` of the same model now give the same value,
+`identical()`. On `lm(y ~ x1 + x2)` with 120 observations in four groups of
+30, the `lm` gave 9.3670076662104975, with a p-value of 0.0247890868, and
+the `glm` 9.3670316853686657 and 0.0247888156; both now give the second, the
+value the `gam` gave already.
+
+- On 480 fits of `lm(y ~ g)` with integer responses (`rpois(n, 3)`,
+  `rpois(n, 300)` and `1e4 + rpois(n, 3)`, four groups, balanced and
+  unbalanced, 60 to 60,000 observations), the statistic equals that of exact
+  ties, `stats::fligner.test()` of the responses, in all 480, where it did in
+  none before. On `sleep`, `PlantGrowth`, `warpbreaks`, `InsectSprays` and
+  `iris[-c(50, 100, 150), ]`, each fitted on its groups, it equals
+  `stats::fligner.test()` of the responses scaled to integers, and on `iris`
+  with every row twice the `lm` and the `glm` give the same value. A tie
+  between different observations that exact decimal arithmetic would give,
+  as when two pairs of observations of a regressor recorded with few digits
+  differ by the same amounts, is restored only when rounding leaves it
+  within the tolerance: on `iris` with every row twice, regressed on
+  `Petal.Length`, one of 106 sets of such ties stays broken, and the
+  statistic is 8.14863 where exact arithmetic gives 8.14287. Two forms of one
+  model can then differ by several percent: on the 70 observations above,
+  `y ~ poly(x, 3) + g` gives 1.21547, and `y ~ x + I(x^2) + I(x^3) + g` and
+  `y ~ poly(x, 3, raw = TRUE) + g` give 1.30280, 7% more, since `poly()`
+  breaks in its last bits the ties between repeated values of `x` in
+  different groups (recorded under 0.16.0 in the roadmap).
+- On 3,000 continuous fits of 20 to 10,000 observations (normal, `t3`,
+  Cauchy, exponential and scale-mixture errors, with and without weights,
+  with an intercept of 0 or 1e6, or with a group whose residuals are far
+  from zero), no two deviations that differ in exact arithmetic are tied, and
+  the `lm` and the `glm` give the same value, unless the residuals of a group
+  are 1e8 times their spread. Then the tolerance is a few units in the last
+  place of those residuals, and it tied such deviations in 41 of the 200
+  fits of 1,000 and 10,000 observations, and the `lm` and the `glm` differed
+  in 4.
+- Over a corpus of 55 calls, the 20 calls in which no rank changes are
+  `identical()` to before. Of the 17 with repeated observations, 14 change,
+  by up to 38% of the statistic (`sleep`); of the 38 with continuous
+  responses, 21 change, by 7.9e-7 to 3.2e-5 of the statistic and at most
+  6.1e-6 in the p-value. In the identity harness of the model context, 128 of
+  the 351 calls of the test change, by 1.1e-6 to 4.4e-6 of the statistic. The
+  test is not run by `runHeteroTests()`, the registry or `test_factory`, so
+  nothing else changes.
+
+### The wild bootstrap in the advice for a small sample
+
+`suggestDiagnosticsForProfile()` recommended the wild bootstrap for a sample
+of fewer than 100 observations with the rationale `"Bootstrap inference
+performs well in small samples."`, and step 1 of
+`buildDiagnosticDecisionTree()` said `"Emphasise wild bootstrap and rank
+permutation tests."`. With centred exponential errors the wild bootstrap
+rejects a true null hypothesis 8.2%, 7.3% and 6.1% of the time at the 5%
+level at 30, 50 and 100 observations, with the Rademacher multiplier
+(`inst/validation/wild-multiplier-size.R`). Both now say what the warning of
+`warnDiagnosticAssumptions()` says since 0.15.0. The rationale reads:
+
+```text
+In the package's validation study, at 30 to 100 observations, the wild
+bootstrap rejected a true null hypothesis 4.3% to 5.1% of the time at the 5%
+level with normal and t5 errors, but 6% to 8% of the time with skewed errors.
+Check the residuals for skewness and read p-values near the level with
+caution.
+```
+
+and step 1 reads "Add the wild bootstrap and rank permutation tests;" followed
+by the caution of the warning, "with skewed errors the wild bootstrap does not
+hold its level here: ...". Only the text changes: the same tests are
+recommended, and the same steps given.
+
+### Fixed effects for small groups
+
+**White's, Koenker's and the Breusch-Pagan tests warn when a term of the
+model that holds a factor has more levels than observations per level.** On
+such a fit, fixed
+effects for small groups as in `lm(y ~ x + subject)` with each subject
+observed a few times, the three tests reject a true null hypothesis far too
+often, and the more so the more levels and the fewer observations each. In
+2,000 homoscedastic draws of `lm(y ~ x + subject)` with normal `x`, subject
+effects and errors (`inst/validation/fixed-effects-size.R`), White's,
+Koenker's and the Breusch-Pagan tests rejected at the 5% level in 50.7%,
+57.3% and 39.6% of them with 30 subjects of three observations, in 22.2%,
+23.9% and 28.7% with 30 of four, in 23.8%, 23.8% and 25.2% with 100 of
+eight, and in 97.8%, 97.6% and 82.5% with 200 of four. The excess comes from
+the subject dummies in the auxiliary regression: under normal errors the
+squared residuals of a subject of T observations vary between subjects
+T / (T - 1) times as much as the regression assumes, Koenker's statistic has
+mean its degrees of freedom plus (G - 1) / (T - 1) for G subjects, and the
+squared residuals regressed on `x` alone were rejected in 4.6% to 5.5% of the
+draws by Koenker's statistic and in 4.3% to 5.6% by the Breusch-Pagan
+statistic (`inst/validation/fixed-effects-dummies.R`). At a fixed number of
+observations per subject the size goes to 1 as the subjects grow.
+
+The rule: a term of the model that holds a factor or a character variable,
+with L levels among the n observations of the fit, warns when L > n / L,
+that is L^2 > n. L counts the distinct combinations of the factors of the
+term: a factor such as `subject`; an interaction of factors by its cells,
+such as `a:b` of a crossed `a * b` or `school:class` of a nested
+`school / class`; or a slope for each level, `x:subject`. A variable left
+out of the formula, as in `y ~ . - id`, does not count, and the terms are
+matched to the model frame by position, so that a name in backticks works.
+On a balanced design of G subjects of T it is G > T. In the study, at most as many subjects as observations per subject
+kept the three tests within 2.5% to 7.5% at the 5% level, and more put at
+least one of them outside, in 68 of 69 designs; the exception is the
+Breusch-Pagan test at 8.0% on 20 subjects of 20, inside the rule. On 10
+subjects of 10 they reject in 6.4%, 6.2% and 7.3%, and on 5 subjects of 4,
+over the rule, White's test in 1.0%, too rarely. Unbalanced groups, two
+regressors and a regressor correlated with the subject effects followed the
+same pattern. A slope for each subject, `lm(y ~ x + x:subject)`, is counted
+too, but there the error goes the other way: on 30 subjects of 3 and of 4 and
+on 100 of 8 the three tests rejected in 0.1% to 2.8% of the draws
+(`inst/validation/fixed-effects-variants-size.R`), as White's test with the
+products of a few regressors does on 5 subjects of 4. The warning names the
+term, gives its numbers, and says in which direction the p-value erred in
+the simulations:
+
+```text
+The term `subject` has 30 levels for 120 observations, 4 per level: with
+fixed effects for small groups, more levels than observations per level, the
+p-value of Koenker's test is unreliable; in simulations it was usually far
+too small, and too large when the factor enters only as a slope per level
+(see 'Fixed effects for small groups' in ?performKoenkerTest).
+```
+
+**Values are unchanged:** the statistic, the degrees of freedom and the
+p-value of every call are those before this change, `identical()`, with the
+warning added on a fit over the rule, and nothing changes on a fit below it.
+The
+warning has class `heteroTests_fixed_effects_warning`;
+`suppressWarnings(expr, classes = "heteroTests_fixed_effects_warning")`, or a
+handler for that class in `withCallingHandlers()` that calls
+`invokeRestart("muffleWarning")`, muffles it and no other warning. The
+condition carries the terms, their levels and the number of observations
+(`$factors`, `$levels`, `$observations`).
+
+The routes that compute the same statistics, and over-reject as the three
+tests do, warn too (`inst/validation/fixed-effects-variants-size.R`, 2,000
+replications on 30 subjects of 4 and 100 of 8, 1,000 for the resampling
+routes on 100 of 8):
+`performWhiteTestRobust()`, `performBPTestRobust()` with `studentize = TRUE`
+or `FALSE`, `performBPTestStreaming()`, `performKoenkerTestStreaming()`, the
+deprecated `performStudentizedBPTest()` and `performBreuschPaganTest()`, and
+the registered `"white"`, `"koenker"`, `"breusch_pagan"` and `"student_bp"`.
+On those designs they reject in 21.6% to 27.6% of the samples, each
+as the test it wraps, and give one warning per call.
+`performWhiteTestBootstrap()`, `performWildBootstrapTest()` and
+`bootstrapTestStatistic()`, whose p-values are bootstraps', held their level
+there, at 3.7% to 4.6% with B = 199, and give none.
+`performWhiteTestStreaming()` refuses a factor that is
+a main effect, as before, and gives the warning where it computes White's
+statistic, on a slope for each level. `autoTransform()`, which runs the
+Breusch-Pagan test on each candidate transformation, gives it once.
+
+The warning is given on every call: a result that `cachedTest()` or
+`runHeteroTests()` answers from its cache gives it again, where it gives no
+other warning of the call that computed it, so a call answered from a cache
+warns as a call that computes does. `runHeteroTests()` and `runDiagnostics()`
+give it once for each test that gives it: a test that is refused and replaced
+by a fallback warns once, for the fallback, because the tests warn after they
+have computed. They, and `cachedTest()`, hold the warnings while the tests run
+and give them once the result is complete and stored, so that under
+`options(warn = 2)` the call stops at the end with the right values stored,
+where a warning turned into an error inside the runner would have made it
+take a fallback, and store that, under the name of the test. A robust form with `bootstrap = TRUE`
+warns once, for the asymptotic p-value it reports: `bootstrapTestStatistic()`
+computes its observed statistic and replicates without the warning. On the
+paired design of *White's degrees of freedom* below, where Koenker's and the
+Breusch-Pagan tests return 60 and 63.25 on 30 degrees of freedom, they now
+warn; refusing that fit is still to do. The help pages of the three tests
+have a section *Fixed effects for small groups* with the mechanism, the rule,
+a table of the study and the reference to Juhl and Sosa-Escudero (2014), who
+derive a test for this setting. Testing against the regressors without the
+dummies, and that test, are recorded in the roadmap for after 1.0.0. No
+argument changes.
+
+### Box's M test
+
+**`performBoxMTest()` applies Box's correction factor with three groups or
+more, and its statistic grows.** Box (1949) refers `M (1 - c1)` to a
+chi-square distribution, with
+`c1 = (sum 1 / nu_i - 1 / nu) (2 p^2 + 3 p - 1) / (6 (p + 1) (g - 1))` for
+`g` groups of `nu_i + 1` observations of `p` variables. The package wrote
+the factor with `g - 1` in the numerator as well, where it cancelled the
+denominator's, so it used `(g - 1) c1`: Box's with two groups, too large
+with more, which made the statistic too small and the test conservative.
+`performBoxMTest(iris[, 1:4], iris$Species)` gave 135.2229 and gives
+140.9430, on 20 degrees of freedom either way, the value of
+`biotools::boxM()`, `heplots::boxM()` and `rstatix::box_m()`;
+`performBoxMTest(mtcars[, c("mpg", "hp", "wt")], mtcars$cyl)` gave 20.3998
+(p = 0.0599) and gives 25.5351 (p = 0.0125). With three or more groups the
+statistic grows by the factor `(1 - c1) / (1 - (g - 1) c1)`, 1.01 to 2.11
+on 23 data sets of 3 to 5 groups, and the p-value falls; with two
+groups every value is `identical()` to 0.15.0's, on 28 data sets.
+`runMultivariateTests()`, whose `"box_m"` is this test, returns the new
+values too, and stops on the refusals below as the test does.
+`inst/validation/box-m-approximations-size.R` measured the effect: under
+Gaussian data the test of 0.15.0 rejected at 5% less often than the release
+gate allows in 29 of the 38 cells of three or five equal groups, down to 0
+with small groups and four variables or more, and Box's chi-square is inside
+the gate in 60 of 67 cells. The full sweep's size of 0.012 was not the
+approximation's: in its design, with `x` uniform and so lighter-tailed than
+normal data, Box's chi-square and his F approximation both reject 0.017 of
+the time at 5000 replications. The help page now gives the sizes: liberal
+when the groups are small for the number of variables (0.062 to 0.106 in four
+cells of groups of 10 with 4 or 6 variables), not robust to heavy tails
+(`t5` coordinates, 0.26 to 0.48) and conservative with light tails. The
+statistic keeps its name, `M`, and `parameter` its `df`.
+
+**`performBoxMTest()` drops a level of `group` with no observation, which
+made the result `NA`.** A factor keeps its levels when rows are taken out, so
+`sub <- subset(iris, Species != "virginica")` has a `virginica` level with no
+row, whose covariance matrix was all `NA`:
+`performBoxMTest(sub[, 1:4], sub$Species)` gave `NA` on 20 degrees of
+freedom, and gives the test of the two species observed, 66.8105 on 10
+(p = 1.8e-10), the value of `droplevels(sub)` and of `biotools::boxM()`. A
+character group, which has no empty level, and a factor without one give
+what they gave, `identical()`.
+
+**`performBoxMTest()` refuses a group with no more observations than
+variables, and data with fewer than two groups.** A group of `n_i <= p`
+observations of `p` variables has a singular covariance matrix, whose
+log-determinant is `-Inf`, and the statistic is not defined, whatever the
+data; rounding made it a finite number. On
+`d <- rbind(subset(iris, Species != "virginica"), iris[101:103, ])`,
+`performBoxMTest(d[, 1:4], d$Species)` gave 133.74 on 20 degrees of freedom
+(p = 7.7e-19), and stops with
+
+```text
+Box's M test needs more observations than variables in each group: with 4
+variables, group 'virginica' (3 observations) has no more. The covariance
+matrix of such a group is singular, so its log-determinant is -Inf and the
+statistic is not defined, whatever the data. Each group needs at least 5
+observations; use more data, fewer variables or fewer groups.
+```
+
+A group of one observation, which gave `NA`, is refused with the same
+message, and a single group with observations, which gave `NaN` on 0 degrees
+of freedom, with "Box's M test compares the covariance matrices of two groups
+or more". Data where every group has more observations than variables give
+what they gave, `identical()`; `n_i = p + 1` is computed.
+
+**`performBoxMTest()` refuses a group whose covariance matrix is singular
+with more observations than variables.** A variable that is constant in a
+group, or a linear combination of the others in it, makes the group's
+covariance matrix singular, and the statistic is not defined: with
+`d <- iris[, 1:4]; d[1:50, 4] <- 0.2`, `performBoxMTest(d, iris$Species)`
+returned `Inf` on 20 degrees of freedom (p = 0), and `iris[, 1:4]` with a
+fifth column, the sum of the first two, returned `NaN` with "NaNs produced"
+warnings.
+Both stop, naming the group and the cause:
+
+```text
+Box's M test needs a nonsingular covariance matrix in each group, and that of
+group 'setosa' is singular: the variable 'Petal.Width' is constant in it. Its
+log-determinant is -Inf and the statistic is not defined, whatever the data.
+Leave out the variable, or the combination of variables, that does not vary
+in the group.
+```
+
+or "a variable is a linear combination of the others in it (its 5 variables
+have rank 4)". A group is checked by the rank of its centred data at the
+tolerance of `qr()`, and a log-determinant that under- or overflows on the
+scale of the data, which gave `NaN`, is refused with its own message. On 198
+data sets with nonsingular groups the values are `identical()` to those
+before; a missing value in `data` or in `group` still gives `NA` (the
+roadmap records it).
+
+### Szroeter's test
+
+**`performSzroeterTest()` takes the null mean and variance of its statistic
+from the design of the fit, and every `Q` and p-value changes.** The test
+standardised `h`, the rank-weighted average of the squared residuals, with
+`(n + 1) / 2` and `(n^2 - 1) / (6 n)` whatever the design. Under normal
+errors `h` is a ratio of quadratic forms in the residuals, and its exact
+mean and variance given the design are now used: with `M` the residual-maker
+of the design in the order of the test (`sqrt(w) x` on a weighted fit),
+`A = diag(1, ..., n)` and `nu = n - k`, `E h = tr(M A) / nu` and
+`Var h = 2 (nu tr(M A M A) - tr(M A)^2) / (nu^2 (nu + 2))`, computed from the
+leverages and `Q1' A Q1` at a cost of `O(n k^2)`. The reference is still the
+standard normal distribution, and `h`, the `estimate`, is unchanged,
+`identical()`. On a weighted fit whose leverage falls along the ordering the
+test rejected too often: in `inst/validation/szroeter-design-null-size.R`,
+on the samples of `harrison-mccabe-size-power.R`, the correctly weighted fit
+of 40 observations rejected a true null hypothesis at 5% 0.0666 of the time
+and rejects 0.0494, and 0.0560 and 0.0550 at 100 and 400 observations become
+0.0470 and 0.0498; unweighted, 0.0444, 0.0484 and 0.0490 become 0.0482,
+0.0498 and 0.0494. Unweighted p-values move by a median 0.006 at 40
+observations, 0.002 at 100 and 0.0006 at 400 on those samples; weighted, by
+a median 0.051 at 40. The help example
+`performSzroeterTest(lm(mpg ~ wt + qsec, mtcars), mtcars, order_by = "wt")`
+gave Q = -0.6494 (p = 0.7420) and gives Q = -0.6626 (p = 0.7462). The other
+alternatives, the registered `"szroeter"` that `runHeteroTests()` runs, its
+`test_factory` entry and every fit the test accepts change in the same way;
+`method`, `parameter`, `alternative` and `data.name` do not.
+
+**`performSzroeterTest()` refuses a fit with one residual degree of freedom,
+for which it returned a value.** With `n - k = 1` the residuals lie on one
+line, so `h` takes the same value whatever the errors and its null variance
+is 0. On 15 observations of `y ~ g`, with `g` a factor of 14 levels, one of
+them observed twice, `h` is 8.5 for any response, and the test returned
+Q = 0.3169 (p = 0.3756) ordered by another variable; it stops with "Szroeter
+test needs at least two residual degrees of freedom: the fit has 15
+observations and 14 estimable coefficients, so h takes the same value
+whatever the errors and there is nothing to test."
+
+### The Breusch-Pagan entry of `runAdvancedDiagnostics()`
+
+**With `auto_enhance = FALSE`, the Breusch-Pagan entry of
+`runAdvancedDiagnostics()` is Koenker's studentized statistic, where it was
+the classical test.** `auto_enhance` is the switch of the automatic bootstrap
+for samples of fewer than 50 observations, but it was also passed to
+`performBPTestRobust()` as `studentize`, so that turning the bootstrap off
+turned the studentization off with it, and the entry, named `breusch_pagan`
+either way, then assumed normal errors, which the default battery of the
+package stopped doing in 0.15.0. `auto_enhance` now turns the bootstrap on
+and off and nothing else, and the entry is the studentized statistic, the
+default of `performBPTestRobust()`, whatever its value. On
+`lm(mpg ~ wt + qsec, data = mtcars)`,
+`runAdvancedDiagnostics(m, mtcars, auto_enhance = FALSE)$results$breusch_pagan`
+was the classical test, 3.135 on 2 degrees of freedom (p = 0.2086), and is
+Koenker's, 3.086 on 2 (p = 0.2138), the statistic `auto_enhance = TRUE`
+reports beside its bootstrap p-value; its `method` says "Studentized", its
+`robust_details$studentized` is `TRUE`, and its effect size and power are
+those of the studentized statistic. From 50 observations, where neither
+setting bootstraps, the two settings now give the same entry. The deprecated
+`rrunAdvancedDiagnostics()` changes with it. The White entry, the metadata,
+and every call with `auto_enhance = TRUE` give what they gave,
+`identical()`. The classical test is still
+`performBPTestRobust(m, data, studentize = FALSE)`.
+
+**`runAdvancedDiagnostics(tests = "bp")` runs the Breusch-Pagan entry, which
+it refused.** Its help page offers `c("white", "bp")` as a subset, and its
+table of names maps `"bp"` to `"breusch_pagan"`, but the names asked for were
+compared with the values of that table rather than with its names, so `"bp"`
+stopped with "Unsupported test requested: bp". It now gives what
+`"breusch_pagan"` gives, under the name `breusch_pagan`: on
+`lm(mpg ~ wt + qsec, data = mtcars)`, `tests = c("white", "bp")` stopped with
+that error and returns White's test and the Breusch-Pagan entry, as
+`tests = c("white", "breusch_pagan")` does. Every other name is refused with
+the message it had.
+
+### The quantile regression test on a model with one regressor
+
+**`performQuantileRegressionTest()` gives a value on a model with a single
+regressor, where it stopped with "subscript out of bounds".** It fits the
+quantile regressions with the design of the fit as one matrix column, and the
+names of the coefficients come from that column: a matrix of one column names
+its coefficient after the matrix alone, so the slope had an empty name, and
+reading it by name for `estimate` stopped. The statistic it would have
+reported is `anova()` of `quantreg::rq(y ~ x)`, which the test now gives and
+`test-quantile-joint-reference.R` checks. Called directly, through
+`test_factory`, the registry or `cachedTest()`, the test stopped; through
+`runHeteroTests()`, and so `runDiagnostics()` and the other functions that
+call it, the failure was masked: the runner ran the fallback of
+`"quantile_regression"`, the rank permutation test, and returned it under
+the name asked for. On `lm(stations ~ mag, data = quakes)`:
+
+| Call | Before | Now |
+| --- | --- | --- |
+| `performQuantileRegressionTest(m, quakes)` | Error: "subscript out of bounds" | F = 57.57 on 1 and 1999 degrees of freedom (p = 5.0e-14), slopes 35.0 and 47.3 at the quartiles |
+| `runHeteroTests(m, quakes, tests = "quantile_regression")`, after `set.seed(1)` | the rank permutation test, rho = 0.261 (p = 0.001), under the name `quantile_regression`, tagged as a fallback | the quantile regression test, as in the row above |
+| `test_factory$run_test("quantile_regression", m, quakes)` | Error: "subscript out of bounds" | the quantile regression test, as in the first row |
+
+So does any design with one column beside the intercept once aliased
+columns are dropped, which stopped the same way: a factor of two levels,
+`lm(len ~ supp, data = ToothGrowth)`, gives F = 0.1529 on 1 and 119 degrees
+of freedom, and `poly(x, 1)`, `x1:x2` alone, an offset beside one regressor
+or `x1 + I(2 * x1)` give their value too. A design with two columns or more
+beside the intercept gives the value it gave, `identical()`. A
+model without an intercept is still refused by `quantreg`, which needs one,
+with its own message. An exploratory size check, not to the grade of
+`inst/validation/`, found the test on one regressor below its level, as the
+two-regressor design of the sweep is under `t5` errors: 2,000 replications
+per cell, rejection rates of 0.029 and 0.040 at 60 and 150 Gaussian
+observations.
+
+### Szroeter's test in `test_factory`
+
+`test_factory$run_test("szroeter", model, data)` stops with a message that
+asks for `order_by`, the column that orders the observations, and shows how
+to pass it, `test_factory$run_test("szroeter", model, data, order_by = "x")`;
+it stopped with "argument "order_by" is missing, with no default". It still
+refuses the call, and orders by nothing of its own: the registered
+`"szroeter"` of `runHeteroTests()` orders by the fitted values, but the
+factory's entry is `performSzroeterTest()`, which takes the ordering from
+`order_by`. With `order_by` it returns what it returned, `identical()`. No
+value changes.
+
+### The streaming tests
+
+**The streaming tests run only when asked for: `runHeteroTests()` runs the
+exact tests on data of any size by default.** Up to 0.15.0 `runHeteroTests()`
+and `runDiagnostics()` replaced the White, Breusch-Pagan and Koenker tests
+with `performWhiteTestStreaming()`, `performBPTestStreaming()` and
+`performKoenkerTestStreaming()` when the data exceeded `chunk_threshold_mb`,
+100 MB by default, and `performWhiteTest()`, `performBPTest()`,
+`performKoenkerTest()` and the White bootstrap switched to them on their own
+above 100 MB. Streaming saves memory mainly in White's test, whose auxiliary
+design is several times wider than the model matrix; the auxiliary design of
+the Breusch-Pagan and Koenker tests is the model matrix itself. And the
+streaming tests do not always give what the exact ones give: the White
+streaming test stops on any model with a factor or a `poly()` term, whose
+squares are collinear with the other terms of its auxiliary regression, so
+that above 100 MB such a model got a fallback under the name `white` where
+smaller data got White's test. The default of `chunk_threshold_mb` is now
+`Inf`, which never streams. To opt in, give a finite threshold:
+`chunk_threshold_mb = 100` streams above 100 MB, as the default did, and
+`chunk_threshold_mb = 0` on data of any size; `chunk_size` keeps its
+meaning, and `attr(, "extras")$streaming` is `TRUE` on a test that
+streamed. A fallback runs the exact test, which holds its auxiliary design
+in memory even when streaming was asked for, and does not set it. The exact
+tests no longer switch at all, and the three streaming functions stay
+exported, unchanged and not deprecated, for a caller who wants them on very
+large data. No argument changes. On data of at most 100 MB, or a model frame
+of at most 100 MB when `data` is not given, every result is the one before
+this change, `identical()`, and the warning about the size of the data above
+50 MB is kept; above 100 MB the results change, to those of the exact tests, which
+hold the full auxiliary design in memory. On `lm(y ~ x1 + group)` in the
+design of `contract_data()` (`tests/testthat/helper-test-recipes.R`), with
+`group` a factor of four levels, Koenker's test gives 10.52 on 4 degrees of
+freedom (p = 0.032) on every route, and White's test:
+
+| Call | 0.15.0 | Now |
+| --- | --- | --- |
+| `runHeteroTests(m, d)`, data above 100 MB | the classical Breusch-Pagan test, 8.653 on 4 degrees of freedom (p = 0.070), under the name `white`, tagged as a fallback | White's test, 17.83 on 8 (p = 0.0225), as on smaller data |
+| `performWhiteTest(m, d)`, data above 100 MB | Error: "Auxiliary regression became rank deficient" | 17.83 on 8 (p = 0.0225) |
+| `runHeteroTests(m, d, chunk_threshold_mb = 0)`, data of at most 100 MB | White's test without cross products, 13.79 on 5 (p = 0.017), tagged as a fallback | unchanged |
+| `runHeteroTests(m, d, chunk_threshold_mb = 0)` or `chunk_threshold_mb = 100`, data above 100 MB | the classical Breusch-Pagan test, as in the first row | White's test without cross products, as in the row above |
+
+Above 100 MB the fallback of 0.15.0 was not White's test without cross
+products, which `runHeteroTests()` tries first, but the next one: that test,
+called through `performWhiteTest()`, switched to the streaming test too and
+stopped on the same squares. The values of the rows above 100 MB were
+computed on the 120 observations of the design, with the size the package
+measures for the data set to 150 MB (`tests/testthat/test-streaming.R`).
+
+The seventh step of the model context (*The model context*, below) builds the
+three streaming tests on it. `performWhiteTestStreaming()`,
+`performBPTestStreaming()` and `performKoenkerTestStreaming()` read the
+response, the residuals, the weights and the design from the fit, and the
+design chunk by chunk, its rows in the order of the fit; the auxiliary design,
+several times wider than the design for White's test, is still built chunk by
+chunk. `data` that are given are matched to the observations of the fit as by
+the tests built on the context: named data in any order, numbered data in fit
+order. This reaches the three functions and `runHeteroTests()` and
+`runDiagnostics()` with a finite `chunk_threshold_mb`. Every value is
+`identical()` to before but for the changes in bold below, and, on a `poly()`
+term, in its last bits (below).
+
+**A term computed from the rows it is given keeps the values of the fit in
+every chunk.** Each chunk built its own design from the formula, on its rows
+of `data`, so `I(x > median(x))` took the median of each chunk. On
+`m <- lm(mpg ~ I(wt > median(wt)) + qsec, data = mtcars)`:
+
+| Call | 0.15.0 | Now, the value of the fit |
+| --- | ---: | ---: |
+| `performBPTestStreaming(m, mtcars, chunk_size = 8)` | 2.268 (p = 0.322) | 4.892 (p = 0.087) |
+| `performBPTestStreaming(m, mtcars, chunk_size = 16)` | 2.577 (p = 0.276) | 4.892 (p = 0.087) |
+| `performKoenkerTestStreaming(m, mtcars, chunk_size = 8)` | 2.993 (p = 0.224) | 6.455 (p = 0.040) |
+| `performKoenkerTestStreaming(m, mtcars, chunk_size = 16)` | 3.400 (p = 0.183) | 6.455 (p = 0.040) |
+| `runHeteroTests(m, mtcars, tests = c("breusch_pagan", "koenker"), chunk_threshold_mb = 0, chunk_size = 8)` | 2.268 and 2.993 | 4.892 and 6.455 |
+
+The new values are those of `performBPTest()` and `performKoenkerTest()`, and
+of the same fit with the column computed beforehand, in chunks of any size.
+In one chunk the median was that of the rows of the fit: on a fit that dropped
+rows the test computed it on the rows it kept, and gave the value of another
+design, in chunks of any size. On the 120 observations of `contract_data()`
+(`tests/testthat/helper-test-recipes.R`) with `x2` missing in rows 3, 7 and
+11, `lm(y ~ I(x1 > median(x1)) + x2, data = d)` gave a Breusch-Pagan
+statistic of 13.35 in one chunk and 5.75 in chunks of 7, where the fit gives
+12.46, and Koenker's 9.28 and 3.99 where it gives 8.66.
+`cut(x, quantile(x))`, which took the breaks of each
+chunk, stopped the three with "factor cut(wt, quantile(wt)) has new levels"
+in chunks of any size, since the fit drops the row at the minimum of `wt`; on
+`lm(mpg ~ cut(wt, quantile(wt)) + qsec, data = mtcars)` the Breusch-Pagan
+test gives 12.94 on 4 degrees of freedom (p = 0.012) and Koenker's 11.13
+(p = 0.025), and `runHeteroTests()` with `chunk_threshold_mb = 0`, which put
+the NCV test under both names (5.34), gives them. White's streaming test
+stops there on the squares of the dummies, collinear with the dummies, as on
+any factor, where it stopped on the new levels.
+
+**A `gam` given its data in another order is matched to them by row name, by
+the streaming tests too.** Each chunk read the rows of `data` by position,
+which the residuals of an `mgcv::gam()` fit, which carry no names, did not
+check. On `g <- mgcv::gam(mpg ~ wt + qsec, data = mtcars)` with the data
+shuffled, `mtcars[sample(32), ]` after `set.seed(1)`, White's streaming test
+returned 16.86 where the data in the order of the fit give 11.82, the
+Breusch-Pagan test 5.12 for 3.13 and Koenker's 5.04 for 3.09; each now gives
+the value of the call on `mtcars`.
+
+**A fit whose coefficients, residuals or weights were changed after it was
+fitted is refused by the streaming tests, as by the tests built on the
+context**, and so is `runHeteroTests()` that streams them, without a fallback
+("The fitted model does not reproduce its residuals from its design and
+coefficients", of class `heteroTests_model_context_error`). On
+`lm(mpg ~ wt + qsec, data = mtcars)` with 0.5 added to the coefficient of
+`wt` they returned the values of the fit before the edit: White's streaming
+test 11.82 (p = 0.037), the Breusch-Pagan test 3.13 and Koenker's 3.09.
+
+**A fit with `model = FALSE` whose data are gone, given numbered data in
+another order than the fit, is refused by the streaming tests**, with "...
+cannot use the model frame of `model`: it cannot be rebuilt (...), and `data`
+does not give the response and the fitted values of the fit", as by the tests
+built on the context. They read its rows by position and returned the values
+of other rows: on `lm(y ~ x1 + x2, data = gone, model = FALSE)` for the 120
+observations of `contract_data()`, given `dplyr::as_tibble(d)[sample(120), ]`
+after `set.seed(3)`, White's streaming test returned 8.887 where the data in
+the order of the fit give 11.145. Given data that hold its rows, by row name,
+or by row number for a fit to data that number their rows, and give its
+response and fitted values, such a fit is tested on them, as before. The
+numbered data of a fit to data with row names of their own, such as
+`dplyr::as_tibble(mtcars)` for a fit to `mtcars`, lack those names, and are
+refused, as before, now with "... cannot use the model frame of `model`: it
+cannot be rebuilt (...), and the rows of `data` cannot be matched to the
+observations of the fit: `data` has no rows named Mazda RX4, Mazda RX4 Wag,
+...", by every test built on the context, where the streaming tests said
+"Missing rows" and the others that `data` does not give the response and the
+fitted values of the fit.
+
+Also, for the three:
+
+- Errors that become values. Without `data`, a model that transforms its
+  variables or has an `offset()` term stopped with "The following variables
+  are missing from input data: mpg, wt" (or `o`): on
+  `lm(log(mpg) ~ log(wt) + qsec, data = mtcars)` White's streaming test gives
+  12.32 (p = 0.031), the value of `performWhiteTest()`. The complete rows of a
+  fit with `na.omit` numbered again, and the tibble in the order of the fit of
+  a fit to named data, such as `dplyr::as_tibble(mtcars)`, stopped with
+  "Missing rows: 32" or "Missing rows: Mazda RX4, Mazda RX4 Wag, ...";
+  they give the value on the rows of the fit.
+- A multivariate `lm` is refused with "... needs a model with one response;
+  `model` has 2.", where they stopped with "'length = 4' in coercion to
+  'logical(1)'"; a fit with `model = FALSE` whose data are gone, without
+  `data`, with the message of the context, where they stopped with "Expected
+  a data.frame for input data".
+- An `mgcv::gam()` fit with smooth terms is tested as before, on the design
+  of the variables of its formula, which its model frame holds: on
+  `mgcv::gam(mpg ~ s(wt) + qsec, data = mtcars)` the Breusch-Pagan statistic
+  is 4.75 on 2 degrees of freedom, where `performBPTest()`, which tests such a
+  fit on the basis of its smooths, gives 14.64 on 10. Which tests take such a
+  fit, and on which design, is left to a later step of the model context.
+- White's streaming test still stops on collinear terms of its auxiliary
+  regression, the squares of dummies or of an orthogonal `poly()` basis,
+  which `performWhiteTest()` drops; that is the subject of a pull request of
+  its own. Where it stopped before reaching that regression, on a variable
+  missing from the model frame or on the new levels of `cut()`, it now stops
+  there.
+- `runHeteroTests()` with a finite `chunk_threshold_mb`, which put a fallback
+  under the names of the streaming tests where they stopped as above (White's
+  test without cross products under `white`, and the NCV test under
+  `breusch_pagan` and `koenker`), runs them: on
+  `lm(y ~ x1 + x2 + offset(o))` without `data`, on the data of the test
+  matrix (`context_data()`, `tests/testthat/helper-model-context.R`), it gave
+  White's test without cross products, 10.80, and the NCV test's 2.22 under
+  both other names, and gives White's streaming test, 11.28, the Breusch-Pagan
+  test's 11.66 and Koenker's 9.29.
+- Unchanged: every other value of a valid call, the refusals of a zero weight
+  and of the guard, and every message the test suite pins. A corpus of 33,339
+  calls, the three in chunks of 7, 40 and 10,000 and through the runner with
+  `chunk_threshold_mb = 0`, and every other test, on 361 combinations of fits,
+  offsets, terms, forms of `data`, dropped rows, missing groups, row names,
+  panels and classes, on the five fits of the table of the Harrison-McCabe
+  rank and the eight designs of White's degrees of freedom, and the examples
+  of thirty-nine help pages, returns what it returned before, `identical()`,
+  but for the 762 calls of the changes above (`scripts/model-context-identity.R`),
+  every one of them a call of the three or of the runner that streams them,
+  55 of them the new refusals in bold; each of the 562 that now return a
+  value, or another one, gives the value of its reference: the same call on
+  the data frame of the fit or on the data of a `gam` in its order, or the
+  fit with the column of the term computed beforehand. The warnings are those
+  of before on every call.
+- On a `poly()` term a value can change in its last bits: the chunks computed
+  the basis again by the recurrence of the `predvars` of the terms, and the
+  design of the fit holds the basis that `poly()` computed by its QR
+  decomposition. With `set.seed(101); n <- 500;
+  d <- data.frame(x1 = runif(n, 0.5, 3), x2 = rnorm(n), x3 = rexp(n));
+  d$y <- 2 + d$x1 - 0.7 * d$x2 + 0.3 * d$x3 + rnorm(n, sd = d$x1)`,
+  `performBPTestStreaming(lm(y ~ poly(x1, 2) + x2, d), d)` gave
+  156.20252285478642 and gives 156.20252285478654; of 621 such calls of the
+  review of this step, 38 changed, by at most 9.9e-14 relative. The 48 calls
+  of the corpus with a value on a `poly()` term are `identical()` to before.
+
+### Which models the tests accept
+
+Every exported test was run on an `lm`, a weighted `lm`, an `lm` with a zero
+weight, a Gaussian `glm` (unweighted, weighted, with a zero prior weight), a
+binomial and a Poisson `glm`, a `survey::svyglm()` fit, a `plm` fit,
+rank-deficient fits, `MASS::rlm()` and `fitWLS()` fits, through every route
+that calls it (`runHeteroTests()`, `runDiagnostics()`, the registry,
+`test_factory`, `cachedTest()`, `runHeteroTestsParallel()`, `runPanelTests()`,
+`runTimeSeriesTests()`). The result is the table of the new *Supported
+models* page of the site, and `?test_results` sets out the rules. The changes
+in bold change what calls return.
+
+**A rank-deficient fit is tested on the estimable part of its design.** An
+aliased term, such as `z2 = 2 * z`, or the dummy of a cell of an interaction
+that no observation falls in, leaves an `NA` coefficient. The residuals and
+fitted values of such a fit are the projection on the column space of the
+design, which the aliased columns do not change, so they are those of the
+same model fitted without them. Every test refused such a fit with "Model
+coefficients must be finite before running ..."; every test that accepts the
+model without the aliased columns now accepts it, drops the aliased columns
+from the design it builds, takes its degrees of freedom from the rank, and
+returns the statistic and p-value of the model fitted without them. A test
+that refuses that model, as the quantile regression test refuses a weighted
+fit, refuses the rank-deficient one with the same message.
+`tests/testthat/test-model-eligibility.R` checks all 39 tests on four such
+fits (an aliased regressor in an `lm`, a weighted `lm` and a Gaussian `glm`,
+and an empty cell of an interaction) to `1e-10`; on them the two agree to the
+last digit. On `lm(y ~ x + z + z2)` in the design of
+`tests/testthat/test-koenker-studentized.R`:
+
+| Call | 0.15.0 | Now |
+| --- | --- | --- |
+| `performKoenkerTest()`, `performStudentizedBPTest()` | Error: "Model coefficients must be finite" | 20.87 on 2 degrees of freedom (p = 2.9e-05), as `lmtest::bptest()` |
+| `performWhiteTest()` | Error | 22.43 on 5 degrees of freedom (p = 0.00043) |
+| `performGQTest(order_by = "x")` | Error | 4.208 on 57 and 57 degrees of freedom (p = 1.0e-07) |
+| `performRESETTest()` | Error | F = 0.359 on 2 and 145 degrees of freedom (p = 0.699) |
+| `performQuantileRegressionTest()` | Error | F = 18.53 on 2 and 298 degrees of freedom (p = 2.6e-08) |
+| `runHeteroTests()` | Error | White's and Koenker's tests, as above |
+
+These are the values for `lm(y ~ x + z)`. `lmtest::bptest()` and
+`car::ncvTest()` give the same value on the rank-deficient fit;
+`lmtest::gqtest()` and `lmtest::resettest()` count the aliased column and
+give 56 and 144 degrees of freedom, against 57 and 145 on `lm(y ~ x + z)`.
+The quantile regression test fits `quantreg::rq()`, which refuses a singular
+design, to the columns that were not aliased. A resampling replicate whose
+refit aliases a coefficient the fit estimated, as a pairs resample of an
+interaction can, fails, as it did when every test refused it. The White
+streaming test stops on the empty cell, because the squares of its dummies
+are collinear, as it stops on the model without the aliased column. A
+coefficient that is infinite, `NaN`, or `NA` without the fit being
+rank-deficient is still refused. `validateTestInputs()`, a function defined
+outside the package that a user registers with `test_factory`, and
+`generateHeteroRecommendations()` still refuse a rank-deficient fit, now with
+"cannot use a rank-deficient model: the coefficient of z2 is aliased (NA)";
+`test_factory` leaves it to any function of the package.
+
+The model without the aliased columns is the one `lm()` keeps: of an aliased
+set, the column that comes last in the order of the terms is left out. Most
+statistics depend only on the space the columns span; White's test without
+its cross products (`cross_products = FALSE`, `method = "reduced"` of
+`performWhiteTestRobust()`, or more regressors than `max_interactions`) and
+`performHighDimensionalTest()` when it keeps fewer components than columns
+depend on which column is left out, and so on the order of the terms. One
+test does not give the value of the model without the aliased columns:
+`performVarianceFormTest(form = "power")` takes the logarithms of every
+column of the design, the aliased ones included, and the logarithm of an
+aliased column is not a combination of the logarithms of the others. With
+`x14 = x1 + x4`, `lm(y ~ x1 + x4 + x14)` gives 1.352 on 6 and 150 degrees of
+freedom, where `lm(y ~ x1 + x4)` gives 2.015 on 3 and 154 and
+`lm(y ~ x14 + x1)` 1.343, in the design of `test-model-eligibility.R`; the
+value does not depend on the order of the terms. With the exponential form,
+the default, all three give 0.922 on 3 and 154.
+
+**A Gaussian `glm` with a zero prior weight is refused as the same `lm`
+is.** A zero weight removes an observation from the fit, and its residual is
+an artificial zero that the tests would count. The tests refused an `lm` with
+a zero weight but read the weights of a `glm` through a helper that returns
+none for a `glm`: with `cars$w <- 1 / cars$speed` and a zero first weight,
+`performKoenkerTest(glm(dist ~ speed, data = cars, weights = w), cars)`
+returned 0.750 (p = 0.386) and `performWhiteTest()` 0.801 (p = 0.670). The
+32 tests that returned a value for such a `glm`, `performScatterDiagnostic()`,
+and so `runHeteroTests()`, `runDiagnostics()`, the registry, `test_factory`,
+`cachedTest()`, `runHeteroTestsParallel()`, `runPanelTests()` and
+`runTimeSeriesTests()`, now stop with the message they give for the `lm`,
+"The model was fitted with zero or non-finite weights";
+`performWhiteTestBootstrap()` gives it instead of "Model residuals must be
+finite", and `performSpatialHeteroTest()` instead of "objects of different
+length". The three tests that refused every `glm` refuse it with the message
+they give the `lm` (below). `performRESETTest()` accepts a zero weight, on
+an `lm` and on a `glm`, as before: its two fits are weighted least squares,
+in which a zero weight drops the observation from both, and its F statistic
+and degrees of freedom are those of the fit to the observations with positive
+weight (1.489 on 2 and 45 degrees of freedom for `cars` above, either way).
+The residuals of a weighted Gaussian `glm` are still its deviance residuals,
+so no value of a `glm` with positive weights changes, and `plotBeforeAfter()`
+now labels them
+"(weighted residuals)", as it labels those of a weighted `lm`.
+
+**`performWhiteTestStreaming()`, `performHarrisonMcCabeTest()` and
+`performVarianceFormTest()` accept a Gaussian `glm` with the identity link,
+and return the value of the `lm`.** They refused every `glm`, where the other
+tests accept this one. A Gaussian `glm` with the identity link and prior
+weights `w` is fitted by maximum likelihood, which for normal errors is
+weighted least squares: iteratively reweighted least squares has the
+working response `y` and the working weights `w` whatever the current
+estimate, so its first step is the fit of `lm(..., weights = w)` (Nelder and
+Wedderburn, 1972; McCullagh and Nelder, 1989; Green, 1984). Its design,
+residuals and weights are those of the `lm`, and the three statistics and
+their null distributions are functions of those alone; the *Supported models*
+page sets out the argument, test by test. The limit was in the code: the
+White streaming test runs checks that read the R-squared of `summary()`,
+which a `glm` does not report, and the other two read the weights through a
+helper that returns none for a `glm`. They read the prior weights now, and
+the checks the R-squared of the least-squares fit.
+`performWhiteTestStreaming(glm(mpg ~ wt + qsec, data = mtcars), mtcars)`
+stopped with "needs a model fitted by stats::lm()" and returns 11.82 on 5
+degrees of freedom (p = 0.037), the value of the `lm`;
+`performHarrisonMcCabeTest(..., order_by = "wt")` returns 0.5595
+(p = 0.693) and `performVarianceFormTest()` F = 1.765 on 3 and 26 degrees of
+freedom (p = 0.179), as for the `lm`. With prior weights `1 / wt` the first
+two give 14.52 and 0.6362, the values of the weighted `lm`, and the
+variance-form test refuses the weights, as it refuses those of the `lm`: they
+did not come from `fitWLS()`. `runHeteroTests()` on such a `glm`, when it
+takes its streaming path (data above `chunk_threshold_mb`, which since this
+release must be given: *The streaming tests*, above), fell back on the
+simplified White test under the name `white`, tagged as a fallback: 10.52 on
+4 degrees of freedom (p = 0.033) for `glm(y ~ x1 + x2)` in the design of
+`contract_data()` (`tests/testthat/helper-test-recipes.R`). It returns the
+streaming White test now, 11.14 on 5 (p = 0.049), the value of the `lm`.
+The value is that of the `lm` when the two decide the rank of the design
+alike: `glm.fit()` aliases a column with the tolerance `1e-11` by default,
+`lm()` with `1e-7`, so on a nearly collinear column the `glm` gives the
+value of `lm(..., tol = 1e-11)` (the *Supported models* page). A `glm` of
+another family or link is refused,
+now with the message the other tests give, which names the family and the
+link. `tests/testthat/test-model-eligibility.R` compares the `glm` and the
+`lm` in the three tests on 34 calls (unweighted and weighted, with `na.omit`,
+a factor and a rank-deficient design) to `1e-10`; they differ by rounding,
+below `1e-12`. On 936 calls of every test on `lm`, weighted `lm`, `fitWLS()`
+and `MASS::rlm()` fits, every result is `identical()` to before.
+
+**A near-perfect Gaussian `glm` is refused as the same `lm` is.** The checks
+every test runs refuse a fit with an R-squared above 0.999 ("Model appears
+perfectly explained"), read from `summary()`, which reports none for a
+`glm`, so 30 tests gave such a `glm` a value: with
+`cars$y <- 2 + 3 * cars$speed + rnorm(50, sd = 0.05)` (`set.seed(1)`),
+`performKoenkerTest(glm(y ~ speed, data = cars), cars)` returned 0.957
+(p = 0.328). They read the R-squared of the least-squares fit now, which for
+the `glm` is the R-squared `summary.lm()` computes from its fitted values,
+residuals, weights and offset, those of the `lm`, and refuse it.
+`checkModel(enhanced = TRUE)`, which stopped on any `glm` with "missing
+value where TRUE/FALSE needed", warns about such a fit as about the `lm`,
+and skips the check for a `glm` of another family. A Gaussian `glm` with a
+zero prior weight no longer warns "observations with zero weight not used
+for calculating dispersion" before its refusal, which `summary()` of a `glm`
+gave.
+
+**`fitWLS()` refits a Gaussian `glm` as the `lm` it is, and refuses any other
+`glm`.** It refitted any `glm` and kept the class and the call of the `glm`
+without its family, which `summary()` could not read and every test refused.
+Of a Gaussian `glm` it now returns the `lm` it returns for the equivalent
+`lm`, with the prior weights of a weighted `glm` recorded and the call of
+that `lm`, `stats::lm()` without the arguments only `glm()` takes, so that
+`summary()` prints it and `update()` fits an `lm` again;
+`performVarianceFormTest(fitWLS(glm(mpg ~ wt + qsec, data = mtcars)))` gives
+F = 1.765, as for the `lm`. Of a binomial or Poisson `glm` it stops with
+"fitWLS() needs a model fitted by stats::lm()", and of a `survey::svyglm()`
+fit, which it returned with the class of the `svyglm`, with the message the
+tests give for one.
+
+**`performScatterDiagnostic()` refuses a `glm` that is not a least-squares
+fit, and data that lack a variable of the model.** Its absolute residuals vary
+with the mean by construction:
+`performScatterDiagnostic(glm(am ~ wt, data = mtcars, family = binomial), mtcars, "wt")`
+returned -0.180, and with `qsec` dropped from `mtcars` the diagnostic of
+`lm(mpg ~ wt + qsec, data = mtcars)` returned -0.141; both now stop with the
+messages the tests give.
+
+**The registry name `"ncv"` checks the data it is given, as
+`performNCVTest()` does.** It ignored `data`, and because it is the last
+fallback of `"white"`, `"koenker"` and `"breusch_pagan"`,
+`runHeteroTests(lm(mpg ~ wt + qsec, data = mtcars), mtcars[1:20, ])`, or with
+data that lack `qsec`, returned the Cook-Weisberg statistic, 0.591 on 1
+degree of freedom, under the names `white` and `koenker`, tagged as a
+fallback, as did `runDiagnostics()`. They now stop with the refusal of White's test, as
+`cachedTest("ncv", ...)` and `runHeteroTests(tests = "ncv")` stop with that of
+`performNCVTest()`. On data that hold the rows and variables of the fit, and
+with `data = NULL`, every value is `identical()` to before.
+
+**`runHeteroTests()` on a tidymodels workflow without `data` runs the tests
+on the model frame of the engine's fit.** It gave them the predictors of the
+workflow's mold, which lack the response; every test refused them, and the
+result was the same Cook-Weisberg fallback under the names asked for. For a
+workflow of `linear_reg()` with `recipe(mpg ~ wt + qsec, data = mtcars)` it
+returned 0.591 under `white` and `koenker`, and returns White's statistic,
+11.82 on 5 degrees of freedom, and Koenker's, 3.086 on 2, those of the `lm`.
+Given the data the workflow was fitted to it now stops, as the engine's fit
+names its response `..y`, which those data do not hold, with a message that
+says so and to pass `data = NULL`; it returned the same fallback.
+
+**Four tests account for the offsets they ignored.** `performRESETTest()`
+refitted its augmented model without the offset; `performGQTest()` refitted
+each segment without an offset given as an argument, and, on a weighted fit,
+without any offset; `performQuantileRegressionTest()` fitted
+`quantreg::rq()`, which leaves the offset out; and the studentized
+Breusch-Pagan statistic of `performStudentizedBPTest()`, of
+`performBPTestRobust()` with `studentize = TRUE`, its default, and of the
+registered `"student_bp"` refitted the design without it. On a model with an
+offset they returned a value that is not that of the model. Decided on
+2026-10-17, the development version refused such a model, with a message
+that said the test did not account for the offset yet and which tests did, of
+class `heteroTests_offset_error`, on which the runners did not fall back on
+another test, until the offset fix planned for 0.16.0. They refused exactly
+the offsets they left out: an `offset()` term on an unweighted fit, which the
+refits of GQ evaluated again, was accepted, as were the classical statistic of
+`performBPTestRobust(studentize = FALSE)` and an offset that is zero
+everywhere. The second step of the model context is that fix, and lifted the
+refusal before the release: the four now give the value of the model (*The
+model context*, below, with the values).
+
+**Calls that go through the tests change with them.** On data that lack rows
+or variables of the fit, `compareTestResults()` and
+`generateHeteroRecommendations()` stop, where they returned a data frame and a
+report built on the Cook-Weisberg fallback. `runAdvancedDiagnostics()` and
+`compareTestResults()` accept a rank-deficient fit and refuse a Gaussian `glm`
+with a zero prior weight, and `rcalculateEffectSize()` and
+`restimate_test_power()` accept a rank-deficient fit. `runDiagnostics()`
+returns for a rank-deficient fit, where it stopped: its variance inflation
+factors are all `Inf`, and the cutoff of its influence measures counts the
+aliased coefficient (recorded in the roadmap). `plotBeforeAfter()`,
+`plotResidualsFitted()` and the other plots of the residuals stop on a
+Gaussian `glm` with a zero prior weight, as on the same `lm`.
+
+Also:
+
+- The tests read the prior weights of a Gaussian `glm`, `prior.weights`, and
+  never its working weights, `weights`, which are the weights of the last
+  iteration of iteratively reweighted least squares. For the Gaussian family
+  with the identity link the two are equal; for any other family or link they
+  depend on the fitted means, and such a `glm` is refused. `?test_results`
+  says so.
+- `checkModel()` checks the class of a model only, and says so: the tests
+  decide which models they accept.
+- A model that is neither an `lm` nor a `glm`, such as a `plm::plm()` fit, is
+  refused by every test, `runPanelTests()` and `runTimeSeriesTests()` with one
+  message, which names the class received, as in `Provide an object fitted
+  with stats::lm() or stats::glm() before running performKoenkerTest()
+  (received class: plm/panelmodel)`, and goes on to say that a panel is tested
+  as its pooled `lm()`, with the units and the periods as columns of `data`. It
+  was refused with four different messages.
+- The *Supported models* page lists, for each of the four tests above, the
+  offsets it refuses and those it accepts, and records that
+  `performRESETTest()` keeps accepting a zero weight (decided 2026-10-17).
+- The valid calls of a corpus of 1,198 on the supported classes (an `lm`,
+  weighted or not, a Gaussian `glm`, weighted or not, `MASS::rlm()` and
+  `fitWLS()` fits, and seven other specifications, through every test and
+  route) return what they returned in 0.15.0, `identical()`, but the label of
+  `plotBeforeAfter()` for a weighted Gaussian `glm`.
+
+### The model context
+
+`performWhiteTest()`, `performBPTest()` and its deprecated name
+`performBreuschPaganTest()`, `performKoenkerTest()`,
+`performRankPermutationTest()` and `performHighDimensionalTest()` read the
+response, the design, the residuals, the weights and the offset from the
+fit, through an internal model context, and no longer rebuild the design from
+`data`. Data that are given are matched to the observations of the fit by
+the guard of 0.15.0 before anything is read from them, and nothing is
+dropped before the match: named data in any order, numbered data in fit
+order. This is the first of eleven steps; the design, the plan and the
+decisions are on the
+[design page](https://diogoribeiro7.github.io/heteroTests/design/model-context/)
+of the site. Through these tests the change reaches the base statistic of
+`performWhiteTestRobust()` and `performBPTestRobust(studentize = FALSE)`, the
+registry names `white`, `breusch_pagan`, `koenker`, `rank_permutation` and
+`high_dimensional`, and the default battery of `runHeteroTests()` and
+`runDiagnostics()`. `performWhiteTestBootstrap()` does not change: its
+observed statistic and its replicates keep the computation of 0.15.0, so that
+both come from the same kind of design, until a later step moves both; and
+the streaming tests, which `runHeteroTests()` runs in place of three of the
+five only when asked for since this release (*The streaming tests*, above),
+still rebuild the design chunk by chunk until the step that migrates them.
+
+**A term computed from all the rows of the data is tested as the fit
+computed it.** A fit that drops rows computes a term such as
+`I(wt > median(wt))` on all the rows of the data before it drops the
+incomplete ones; the tests rebuilt the design on the rows the fit kept, where
+the median is another, so they tested a design the fit never used. With
+
+```r
+d <- mtcars
+d$qsec[c(15, 16, 17)] <- NA
+m <- lm(mpg ~ I(wt > median(wt)) + qsec, data = d)
+```
+
+the three heaviest cars are dropped, the median of `wt` on the 29 that are
+left is lower, and the indicator changed for the cars in between. The tests
+now give the value of the same fit with the indicator computed beforehand,
+`d$heavy <- d$wt > median(d$wt)` and `lm(mpg ~ heavy + qsec, data = d)`:
+
+| Call | 0.15.0 | Now |
+| --- | --- | --- |
+| `performWhiteTest(m, d)` | 9.634 (p = 0.047) | 10.00 (p = 0.040) |
+| `performBPTest(m, d)` | 8.463 (p = 0.0145) | 8.647 (p = 0.0133) |
+| `performKoenkerTest(m, d)` | 9.348 (p = 0.0093) | 9.551 (p = 0.0084) |
+| `performRankPermutationTest(m, d)`, `set.seed(1)` | -0.676 (p = 0.001) | -0.738 (p = 0.001) |
+| `performHighDimensionalTest(m, d)` | 2.841 (p = 0.092) | 2.877 (p = 0.090) |
+
+A term that does not depend on the rows it is computed from (`log()`,
+`poly()`, `ns()`, `scale()` through their `predvars`) gave the value of the
+fit already.
+
+**Without `data`, `runHeteroTests()` runs White's and Koenker's tests on a
+fit whose weights or offset are a column of the data.** On
+`d$w <- 1 / d$wt` and `m <- lm(mpg ~ wt + qsec, data = d, weights = w)` with
+`d <- mtcars`, `performWhiteTest(m)` and `performKoenkerTest(m)` stopped with
+"object 'w' not found", and `runHeteroTests(m)` returned the Cook-Weisberg
+statistic, 1.545 (p = 0.214), under the names `white` and `koenker`, tagged as
+a fallback, as did `runDiagnostics()`. It returns White's statistic, 14.52 on
+5 degrees of freedom (p = 0.013), and Koenker's, 4.413 on 2 (p = 0.110), the
+values with `data`. With an offset given as a column, `offset = o` for
+`d$o <- 0.1 * d$hp`, it returned the Cook-Weisberg statistic 2.552 under both
+names, and returns White's 17.91 (p = 0.0031) and Koenker's 0.294 (p = 0.863).
+
+Also, for the five tests:
+
+- Errors that become values. Weights or an offset taken from a column of the
+  data, with `data` omitted or the model frame given as `data`: Koenker's
+  statistic of the weighted fit above, 4.413, with
+  `performKoenkerTest(m)` and with `performKoenkerTest(m, model.frame(m))`.
+  Transformed variables and `offset()` terms without `data`:
+  `performKoenkerTest(lm(log(mpg) ~ log(wt) + qsec, data = mtcars))` stopped
+  with "The following variables are missing from input data: mpg, wt", and
+  gives 5.518 (p = 0.063), the value with `mtcars`; the same holds for
+  `poly()`, `ns()`, `I(wt > median(wt))` and `cut()`, which the model frame
+  holds as terms. Numbered data that hold the rows a fit with `na.omit`
+  dropped, or only the rows it kept, numbered again, a tibble with the rows
+  it dropped, the tibble the model was fitted on, and a tibble in the order of
+  a fit to data with character row names: they stopped with "Missing rows",
+  or with "numbers the rows that are left afresh", and give the value on the
+  rows of the fit. Numbered data with one row per observation are matched in
+  the order of the fit once their values reproduce it (decided on
+  2026-10-18). A fit with `subset =` given by index:
+  `performKoenkerTest(lm(mpg ~ wt + qsec, data = mtcars, subset = 3:32), mtcars)`
+  stopped with "could not align the design matrix with model residuals" and
+  gives 2.442, the value of the fit to `mtcars[3:32, ]`. A `cut(x, quantile(x))`
+  term: `performKoenkerTest(lm(mpg ~ cut(wt, quantile(wt)) + qsec, data = mtcars), mtcars)`
+  stopped with "factor ... has new levels" and gives 11.13 (p = 0.025), the
+  value of the same fit with `x = TRUE`.
+- A multivariate `lm`, `lm(cbind(mpg, qsec) ~ wt, data = mtcars)`, is refused
+  with ``performKoenkerTest() needs a model with one response; `model` has 2.``
+  instead of the coercion error "'length = 4' in coercion to 'logical(1)'",
+  also through `runHeteroTests()`.
+- On a fit with a `poly()` term the value equals, with `identical()`, what
+  0.15.0 computes on the fit's stored design (the model refitted with
+  `x = TRUE`); differences against the design 0.15.0 rebuilt are in the last
+  bits (measured up to 1.3e-15 relative on the statistic).
+- A fit whose coefficients, residuals or weights were changed after it was
+  fitted is refused ("The fitted model does not reproduce its residuals from
+  its design and coefficients", "The weights of the model are not those its
+  coefficients were fitted with"). A fit with `model = FALSE` whose data are
+  gone, so that its model frame can no longer be rebuilt, is tested on `data`
+  when `data` gives the response and the fitted values of the fit, as it was
+  tested before without that check, and refused otherwise, as with `data`
+  whose response was reversed, for which a value was returned.
+- These refusals have class `heteroTests_model_context_error`, and
+  `runHeteroTests()` and `runDiagnostics()` keep it and run no other test under
+  the name of the one refused, as for a refusal of `data`; on an edited fit
+  the runner put the Cook-Weisberg test under the names `white` and
+  `koenker`.
+- The rank permutation test, when its `order_by` names a column of `data`
+  that the model frame does not hold, refuses numbered data taken in the order
+  of the fit if two rows of the fit tie on every compared column, which could
+  then have been exchanged; such data stopped with "Missing rows" before.
+- **`bootstrapTestStatistic()`, `performWhiteTestRobust(bootstrap = TRUE)`
+  and `performBPTestRobust(bootstrap = TRUE)` refuse a fit whose model frame
+  cannot be rebuilt from `data` under the levels of the fit, as with
+  `cut(x, quantile(x))`.** They refit their replicates from the formula until
+  a later step, and those replicates would compute other breaks than the fit.
+  Where the base statistic already failed, the error changes from "factor
+  ... has new levels" to "`data` does not reproduce the fit". Some of these
+  calls returned a value before, for example
+  `bootstrapTestStatistic(performGlejserTest, ...)` on such a fit, and the
+  robust bootstraps on the same fit refitted with `x = TRUE` (White 11.32,
+  p = 0.184; Breusch-Pagan without studentizing 15.79, p = 0.0033). That
+  value compared the statistic of the fit with replicates of another design,
+  and these calls now stop. Calls that stopped in their base statistic and
+  now reach the checks of the bootstrap stop there instead, with its own
+  message.
+- The warning "Removed N observations due to missing values in ..." is still
+  given for the incomplete rows of `data`, which the fit left out, and nothing
+  is dropped. Koenker's test gives the warnings of the checks of the model
+  once; it gave them twice.
+- Unchanged: every other value of a valid call, every refusal of the guard of
+  0.15.0, numbered data in another order than the fit, which stay refused,
+  and every message the test suite pins; on a call with more than one defect,
+  the first one reported may differ, since the rows of `data` are matched
+  before the checks of the model. Data with fewer rows than the fit now
+  stop with "Missing rows: ..." instead of "Input Data contains only N
+  observations ...", for the same reason. `performWhiteTestRobust()` and
+  `performBPTestRobust()` keep their own preparation of the data until a
+  later step, so they still need `data` for a model that transforms its
+  variables, and a fit with `na.action = na.exclude` is still refused. A
+  corpus of 11,271 calls, every test and the bootstraps above on
+  262 combinations of fits, offsets, terms, forms of `data`,
+  dropped rows and row names, the default battery and the examples of the five
+  help pages, returns what it returned in 0.15.0, `identical()`, but for the
+  591 calls of the changes above
+  (`scripts/model-context-identity.R`); the rows of the five tests in the
+  studies of `inst/validation/` that use them are reproduced byte for byte.
+
+The second step moves the studentized Breusch-Pagan statistic
+(`performStudentizedBPTest()`, `performBPTestRobust()` with
+`studentize = TRUE`, its default, the registered `"student_bp"`, its
+`test_factory` entry and `rvalidate_against_reference("studentized_bp")`),
+`performRESETTest()`, and so `runDiagnostics()`, which runs it,
+`performGQTest()` and `performQuantileRegressionTest()`, and so the registered
+`"quantile_regression"`, onto the model context. They read the response, the
+design, the weights and the total offset from the fit, and every refit
+carries the offset. Data that are given are matched as for the first five:
+named data in any order, numbered data in fit order. Goldfeld-Quandt reads its
+`order_by` at the confirmed rows of `data`, or, without `data`, from the model
+frame when it holds the variable under its own name. Without an offset,
+without a term that depends on the rows it is computed from, and on data
+that 0.15.0 accepted, every value is `identical()` to before, but on the
+calls the four now refuse, in bold below: an `mgcv::gam()` fit with smooth
+terms, a model frame rebuilt from changed data, a multivariate `lm` without
+`data` in RESET, and, through the runner, a `model = FALSE` fit whose data
+are gone.
+
+**On a model with an offset the four give the value of that model.** The
+refusals of the offsets they left out (*Four tests account for the offsets
+they ignored*, above) become values. Goldfeld-Quandt, the quantile regression
+test and the studentized statistic give the value of the model fitted to the
+response minus the offset; RESET gives the nested F test of the model with
+its offset against the model augmented with the squares and cubes of its
+fitted values, `X b + o`, both fitted with the offset and the weights of the
+fit (decided 2026-10-18). RESET of the model of `y - o` is another test,
+which augments that model with the powers of `X b` alone. With
+
+```r
+set.seed(33); n <- 160
+d <- data.frame(x1 = runif(n, 1, 3), x2 = rnorm(n), u = rnorm(n))
+d$o <- 0.8 * d$u
+d$y <- 1 + d$x1 + d$o + rnorm(n, sd = d$x1)
+m <- lm(y ~ x1 + x2, data = d, offset = o)
+```
+
+and the same model fitted to the response minus the offset,
+`lm(I(y - o) ~ x1 + x2, data = d)`:
+
+| Call | 0.15.0, on `m` | On the model of `y - o` | Development version, on `m` | Now, on `m` |
+| --- | ---: | ---: | --- | ---: |
+| `performRESETTest()` | F = -0.289 (p = 1) | F = 4.487 (p = 0.013) | Error: `performRESETTest() does not account for an offset yet: ...` | F = 0.112 (p = 0.894), the nested F test of `m` |
+| `performGQTest(order_by = "x1")` | 1.634 | 2.383 | Error | 2.383 (p = 0.00044) |
+| `performQuantileRegressionTest()` | 0.897 | 3.256 | Error | 3.256 (p = 0.040) |
+| `performStudentizedBPTest()`, `performBPTestRobust()` | 4.877 | 9.762, Koenker's statistic on `m` | Error | 9.762 (p = 0.0076), Koenker's |
+
+In the design of `test-fitwls-reestimation.R` the studentized statistic of
+`lm(y ~ x + z, offset = o)` was 19.91, and is Koenker's, 18.79. The values
+reach `performBPTestRobust()` with and without `bootstrap`,
+`runHeteroTests(m, d, tests = "student_bp")` and `tests =
+"quantile_regression"`, `cachedTest()`, the registry, `test_factory`,
+`runHeteroTestsParallel()` and grouped data, and `runDiagnostics()`, which
+runs RESET and returns for a model with an offset. `rrefuse_offset()` and the
+error class `heteroTests_offset_error` are gone. An offset that is zero
+everywhere changes nothing.
+
+**Goldfeld-Quandt fits each segment to the rows of the design of the fit.**
+It refitted the segments of an unweighted fit from the formula, which
+computed again, on the rows of each segment, a term that depends on the rows
+it is computed from: `ns()` and `bs()` placed their knots at quantiles of the
+segment, and `I(x > median(x))` took the median of the segment (decided
+2026-10-18). It now gives the value of `lmtest::gqtest()`, which fits the
+segments to the rows of the design, wherever the design of each segment has
+full rank:
+
+| Call, on `mtcars` (`fraction = 0.2`) | 0.15.0 | Now, as `lmtest::gqtest()` |
+| --- | ---: | ---: |
+| `performGQTest(lm(mpg ~ splines::ns(wt, 3) + qsec), order_by = "wt")` | 0.574 (p = 0.773) | 0.432 (p = 0.869) |
+| the same, `order_by = "qsec"` | 4.894 (p = 0.025) | 4.570 (p = 0.030) |
+| `lm(mpg ~ splines::bs(wt, df = 4) + qsec)`, `order_by = "qsec"` | 3.536 (p = 0.073) | 3.952 (p = 0.057) |
+| `lm(mpg ~ I(wt > median(wt)) + qsec)`, `order_by = "qsec"` | 2.034 (p = 0.150) | 2.241 (p = 0.120) |
+
+`poly()` computed another basis of the same columns on each segment, which
+changes the last bits only (by at most 8.1e-15 relative in the corpus below),
+and `log()` or `I(x^2)` the same columns. A weighted fit was already fitted on
+the design of the fit. A segment whose design is rank-deficient, as when a
+column of `bs()` or an indicator is zero on all its rows, takes its degrees of
+freedom from its rank, as before; `lmtest::gqtest()` takes them from the
+number of columns.
+
+**The quantile regression test fits its quantile regressions to the design
+of the fit.** It refitted them from the formula on the rows of the fit, which
+computed again a term that depends on the rows it is computed from. A fit with
+`cut(x, quantile(x))` drops the rows at the minimum, which fall outside the
+breaks, and the refit computed other breaks on the rows that were left and
+dropped others: on `lm(stations ~ cut(mag, quantile(mag)) + depth, data =
+quakes)`, a fit to 954 of the 1000 rows, it gave F = 16.44 on 4 and 1794
+degrees of freedom (p = 3.1e-13), and gives F = 17.61 on 4 and 1904
+(p = 3.4e-14), the value of the same fit with the factor computed beforehand.
+
+**A term computed from all the rows, on a fit that dropped rows, is tested as
+the fit computed it, by Goldfeld-Quandt and the quantile regression test
+too**, as by the first five (above): on the cell `I(x1 > median(x1))` with
+`na.omit` of the test matrix, Goldfeld-Quandt changes by 10% and the quantile
+regression test by 0.16%, each to the value of the same fit with the
+indicator computed beforehand.
+
+**RESET, Goldfeld-Quandt, the quantile regression test and the studentized
+Breusch-Pagan statistic refuse a fit with smooth terms, and so do the calls
+that run them.** A smooth term of a Gaussian `mgcv::gam()` fit is usually
+penalised, and a penalised fit is not the least-squares fit of its design,
+which each of these tests fits again: it would test a regression the model
+is not. The four refuse every fit with smooth terms, fixed ones
+(`s(x, fx = TRUE)`) included. On
+`m <- mgcv::gam(stations ~ s(mag) + depth, data = quakes)` the studentized
+statistic returned 117.0 (p = 2.1e-20), as did
+`runHeteroTests(m, quakes, tests = "student_bp")`, `performBPTestRobust()`,
+`test_factory` and `rvalidate_against_reference("studentized_bp")`, and RESET
+F = 14.03 (p = 9.8e-07); `runDiagnostics(m, quakes)`, which runs RESET,
+returned its list with that value; Goldfeld-Quandt and the quantile test
+stopped with
+`could not find function "s"`. They now stop with `cannot test an mgcv::gam()
+fit with smooth terms (s(mag))`, of class `heteroTests_model_context_error`,
+which the runners keep, so `runDiagnostics()` stops on such a fit too, until
+the last step of the model context settles which tests take it. The first
+five test it as before, and a `gam` without smooth terms is tested as the
+Gaussian `glm` it is.
+
+**RESET refuses a model frame that `model = FALSE` rebuilt from data changed
+after the fit.** It read that frame: with
+`m0 <- lm(mpg ~ wt + qsec, data = d0, model = FALSE)` for `d0 <- mtcars`, it
+gives F = 6.731 (p = 0.0043), and after `d0 <- mtcars[order(mtcars$wt), ]` it
+returned F = 0.136 (p = 0.874), the test of a response in another order. It
+now stops, as the other tests built on the context do ("cannot use the model
+frame of `model`").
+
+**RESET refuses a multivariate `lm`.** Without `data` it tested
+`lm(cbind(mpg, qsec) ~ wt + hp, data = mtcars)` and returned F = 7.197 on 2
+and 25 degrees of freedom (p = 0.0034), a statistic of neither response. It
+now stops with ``performRESETTest() needs a model with one response; `model`
+has 2.``, as the other tests built on the context do; with `data` it stopped
+already, with "RESET requires `data` with 64 observations to match the fitted
+model, got 32."
+
+**The registered `"student_bp"` and `"quantile_regression"` refuse, without
+`data`, a fit with `model = FALSE` whose data are gone.** Its model frame
+cannot be rebuilt. On `lm(stations ~ mag + depth, data = gone, model = FALSE)`
+for `gone <- quakes`, removed after the fit,
+`runHeteroTests(m, tests = c("student_bp", "quantile_regression"))` returned
+the Cook-Weisberg statistic, 188 (p = 8.8e-43), under both names, tagged as a
+fallback. It now stops with "... cannot use the model frame of `model`: it
+cannot be rebuilt ...", of class `heteroTests_model_context_error`, as its
+default battery already did. Given `data` that give the response and the
+fitted values of the fit, the tests run on them (below).
+
+Also, for these four:
+
+- Errors that become values, as for the first five: weights or an offset
+  taken from a column of the data with `data` omitted or the model frame
+  given, transformed variables and `offset()` terms without `data`, numbered
+  data that hold the rows a fit with `na.omit` dropped, or only those it kept,
+  numbered again, the tibble a model was fitted on, a fit with `subset =`
+  given by index, and `cut(x, quantile(x))`. Goldfeld-Quandt without `data`
+  on a fit that transforms the variable it is ordered by stops with "The
+  following variables are missing from the model frame of `model`: x1. It
+  holds the terms of the model (...)", which says to pass `data`; it stopped
+  with "The following variables are missing from input data".
+- A fit with `model = FALSE` whose data are gone, given `data` that give its
+  response and fitted values: Goldfeld-Quandt and the studentized statistic
+  stopped with "object 'gone' not found", and are tested on `data`, as the
+  first five are. RESET, which builds its context without `data`, still
+  refuses it, now with the message of the context.
+- The function registered as `"student_bp"`, called with `data = NULL`, reads
+  the model frame, as the other routes and every other registered name do; it
+  stopped with "Expected a data.frame for input data".
+- A multivariate `lm` given with `data` is refused with "... needs a model
+  with one response; `model` has 2.", as by the first five, where the tests
+  stopped with a coercion error, and RESET with the count of the rows of
+  `data`.
+- A call with an offset on data the guard refuses now stops with the refusal
+  of `data`, where it stopped with the refusal of the offset; the robust
+  Breusch-Pagan test, which keeps its own preparation of the data until a
+  later step, stops with its check of the variables of `data` where that
+  comes first.
+- RESET reads nothing from `data`: it builds its context without `data`, and
+  keeps the check of `data` of the tests computed from the model alone, for
+  the variables of the model and the row names of the fit, until the step that
+  moves those tests, so that its values on every form of `data` stay those of
+  0.15.0.
+- A fit with a zero weight is refused by Goldfeld-Quandt and the studentized
+  statistic, and accepted by RESET, as before.
+- Unchanged: every other value of a valid call, and every message the test
+  suite pins. A corpus of 14,037 calls, the four, their routes and every other
+  test on 275 combinations of fits, offsets, terms, forms of `data`, dropped
+  rows, row names and classes, the default battery and the registered names
+  `"student_bp"` and `"quantile_regression"` through `runHeteroTests()`, and
+  the examples of the ten help pages, returns what it returned before,
+  `identical()`, but for the 966 calls of the changes above
+  (`scripts/model-context-identity.R`), 24 of them the new refusals in bold;
+  each of the 708 that now return a value, or another one, gives the
+  value of its reference, compared on every number of the result: the same
+  call on the data frame of the fit, on the fit to the complete rows or to the
+  subset, on the fit with its terms computed beforehand, on the model of
+  `y - o`, or, for RESET, the nested F test written out with `anova()`. The rows of the four tests in the studies
+  of `inst/validation/` that use them are reproduced byte for byte, and RESET
+  on the fit with an offset of `offset-refits-size.R` rejects 0.0492 of the
+  time under its null at 5000 replications, inside the release gate,
+  [0.042, 0.058]. The warnings of the calls of the corpus are those of before,
+  but for 39 calls that stopped and now return a value with the warning of
+  `quantreg::anova.rqs()` on the same design (`"non-positive fis"`), and four
+  calls of `performStudentizedBPTest()` on a multivariate `lm` and on a
+  `model = FALSE` fit whose data are gone, without `data`, which it now refuses
+  before its deprecation warning.
+
+The third step moves `performGlejserTest()`, `performParkTest()`,
+`performSzroeterTest()` and the registered `"szroeter"`,
+`performHarrisonMcCabeTest()`, `performHartleyFmaxTest()` and
+`performSpatialHeteroTest()` with the registered `"spatial_hetero"` onto the
+model context. They read the residuals, the weights, the design and the rank
+from the fit, and the variable they name, the `variable` Glejser's and Park's
+tests regress on, the `order_by` of the Szroeter and Harrison-McCabe tests and
+the `group` of Hartley's, at the rows of `data` the comparison confirmed, or,
+without `data`, from the model frame when it holds the variable under its own
+name. Data that are given are matched as for the first nine: named data in any
+order, numbered data in fit order. The spatial test reads no column of `data`,
+and its `listw` lists the observations of the fit in its order, as before.
+Every value is `identical()` to before but for the changes in bold below.
+
+**Harrison-McCabe takes the rank of the fit, decided at the fit's
+tolerance.** Its null distribution is computed from an orthonormal basis of
+the design, whose rank it decided again with `qr()` at the default tolerance,
+`1e-7`. A Gaussian `glm` decides its rank at `1e-11` (`glm.fit()` takes
+`min(1e-7, epsilon / 1000)`), and an `lm` at the `tol` it is given, so on a
+design with a column that is a combination of the others to within `1e-7` but
+not to within the fit's tolerance the residuals were those of a fit of one
+rank and the null distribution that of a smaller one (decided 2026-10-18). It
+now takes the rank of the fit, at its tolerance. With
+`x3 = x1 + 1e-9 * rnorm(120)` added to the 120 observations of
+`contract_data()` (`tests/testthat/helper-test-recipes.R`, seed 5) and the
+model `y ~ x1 + x2 + x3`:
+
+| Fit | Rank, tolerance | Statistic | p-value, 0.15.0 | Now |
+| --- | --- | ---: | ---: | ---: |
+| `glm()`, `order_by = "x1"` | 4, `1e-11` | 0.31988 | 0.0022879 | 0.0022734 |
+| the same, `order_by = "x2"`, `point = 1 / 3`, `alternative = "two.sided"` | 4, `1e-11` | | 0.91344 | 0.91217 |
+| `glm(weights = 1 / x1^2)`, `order_by = "x1"` | 4, `1e-11` | 0.54773 | 0.79089 | 0.80233 |
+| the same, `order_by = "x2"`, `point = 1 / 3`, two-sided | 4, `1e-11` | | 0.58886 | 0.59106 |
+| `lm(tol = 1e-11)`, `order_by = "x1"` | 4, `1e-11` | 0.31988 | 0.0022879 | 0.0022734 |
+| `lm()`, `order_by = "x1"` | 3, `1e-7` (aliases `x3`) | 0.31840 | 0.0021134 | 0.0021134 |
+| `glm(y ~ x1 + x2)`, `order_by = "x1"` | 3, `1e-11` | 0.31840 | 0.0021134 | 0.0021134 |
+
+Each new value equals the test written out from the fit's own QR
+decomposition, with its rank: the residual-maker of that basis, the
+eigenvalues of the quadratic form on the full matrices, and Imhof's formula
+integrated independently (`context_hmc_by_hand()` in
+`tests/testthat/helper-model-context.R`), to 1e-8 relative on these designs,
+the precision to which either decomposition fixes the direction that a column
+at 1e-9 of the others adds, and to rounding on a well-conditioned fit. With the
+rank of the fit, each part of the ordered sample needs at least as many
+observations as the fit has coefficients: on the `glm` above, `point = 3` and
+`point = 117` returned p = 0.0891 and 0.1227, and now stop with "Each part
+needs at least 4, the number of coefficients."; `point = 116` gives 0.11379,
+where it gave 0.11151. On every other fit the two ranks agree and the value is
+unchanged: a `gam` keeps the rank of its design at `1e-7`, as before.
+
+**A `gam` given its data in another order is matched to them by row name.**
+The residuals of an `mgcv::gam()` fit carry no names, and the Glejser, Park,
+Szroeter, Harrison-McCabe and Hartley tests matched `data` to them by
+position, without an error: given the rows of the fit in another order under
+their own row names, they paired each residual with the variable of another
+row and returned a wrong value. They now match the rows by the row names of
+the model frame of the fit, and give the value on the data in the order of the
+fit (approved on 2026-10-19). On `contract_data()`, with the data of the fit
+shuffled, `d[sample(120), ]` after `set.seed(3)`:
+
+| Call, on `d[sample(120), ]` | `gam(y ~ x1 + x2)`, 0.15.0 | Now | `gam(y ~ s(x1) + x2)`, 0.15.0 | Now |
+| --- | ---: | ---: | ---: | ---: |
+| `performGlejserTest(m, data, "x1")` | -0.322 | 3.626 | -0.429 | 3.583 |
+| `performParkTest(m, data, "x1")` | 0.118 | 3.263 | -0.728 | 3.155 |
+| `performSzroeterTest(m, data, order_by = "x1")` | -0.537 | 3.179 | -0.369 | 3.029 |
+| `performHarrisonMcCabeTest(m, data, order_by = "x1")` | 0.4818 | 0.3184 | 0.4661 | 0.3148 |
+| `performHartleyFmaxTest(m, data, "group")` | 2.185 | 3.080 | 1.867 | 2.773 |
+
+Each new value is that of the same call on `d`, which is unchanged. The other
+tests that read a column of `data` beyond the model matched a `gam` by
+position too: the five group tests until the fourth step, below, and the
+panel tests, `performPesaranTest()` and `performBPRandomEffectsTest()`, the
+three streaming tests, and the replicates of `performWhiteTestBootstrap()`
+until the steps that move them; the roadmap records them. The
+spatial test reads no column of `data` and gave the value already.
+
+**The registered `"szroeter"` orders a `gam` with an `offset` argument by its
+fitted values, offset included.** It ordered the observations by
+`predict(type = "response")`, which for an `mgcv::gam()` fit leaves out an
+offset given as the `offset` argument, as its help page says, so it ordered such a
+fit by `X b` alone. It now orders by the fitted values of the fit, `X b + o`,
+which `fitted()` holds, as it orders the same `gam` with an `offset()` term
+and the `lm` with that offset (decided 2026-10-20). With `set.seed(1)`,
+`mtcars$o <- rnorm(32)` and
+`m <- mgcv::gam(mpg ~ wt + qsec, data = mtcars, offset = o)`,
+`runHeteroTests(m, mtcars, tests = "szroeter")` returned Q = 0.800386
+(p = 0.2117), and returns 0.992131 (p = 0.1606), the value of
+`gam(mpg ~ wt + qsec + offset(o))` and of `lm(mpg ~ wt + qsec, offset = o)`.
+
+**A fit with `model = FALSE` whose data are gone, given numbered data in
+another order than the fit, is refused by the six.** Such data, a tibble or a
+data frame whose row names were reset, in another order, cannot be matched to
+the observations of the fit (named data in any order, numbered data in fit
+order), and the model frame built from them does not give the response of the
+fit: the six stop with "... cannot use the model frame of `model`: it cannot
+be rebuilt (...), and `data` does not give the response and the fitted values
+of the fit", of class `heteroTests_model_context_error`, as the first nine do,
+directly, through the registered names, `test_factory` and the runner. They
+returned a value. On `lm(y ~ x1 + x2, data = gone, model = FALSE)` for the 120
+observations of `contract_data()`, with `gone` removed after the fit and the
+data given as `dplyr::as_tibble(d)[sample(120), ]` after `set.seed(3)`,
+Glejser's test returned -0.322 where the data in the order of the fit give
+3.626, Park's 0.118 for 3.263, Szroeter's -0.537 for 3.179 and Hartley's 2.185
+for 3.080, values of other rows; the spatial test, which reads no column of
+`data`, returned its value, 0.0938, and is refused too. The Harrison-McCabe test
+stopped already, with "object 'gone' not found".
+
+**`runHeteroTests(tests = "spatial_hetero")` runs the spatial test on data it
+stopped on.** On a fit whose model frame holds terms rather than variables,
+given that model frame as `data` with its weights in
+`attr(data, "listw")`, the spatial test stopped ("The following variables are
+missing from input data"), and `runHeteroTests()` put the Breusch-Pagan
+statistic it falls back on under its name, tagged as a fallback. It now runs
+the spatial test. With `m <- lm(log(mpg) ~ log(wt) + qsec, data = mtcars)`,
+the weights of `set.seed(1)` and
+`lw <- spdep::nb2listw(spdep::knn2nb(spdep::knearneigh(cbind(runif(32), runif(32)), k = 4)))`,
+and `mf <- model.frame(m)` with `attr(mf, "listw") <- lw`,
+`runHeteroTests(m, mf, tests = "spatial_hetero")` after `set.seed(7)`
+returned the Breusch-Pagan statistic 3.640 (p = 0.162) under the name
+`spatial_hetero`, and returns Moran's I of the squared residuals, -0.1028
+(p = 0.707), the value of `performSpatialHeteroTest(m, mtcars, listw = lw)`.
+The same holds for numbered data that hold the rows of the fit in its order,
+on which the spatial test stopped with "Missing rows".
+
+Also, for these six:
+
+- Errors that become values, as for the first nine. Numbered data that hold
+  the rows a fit with `na.omit` dropped, or only those it kept, numbered
+  again, the tibble a model was fitted on, the tibble of a fit to repeated
+  rows, and the tibble in fit order of a fit to data with character row names
+  stopped with "Missing rows" and give the value on the rows of the fit.
+  Without `data`, a model with an `offset()` term is tested when the variable
+  the test reads is a column of the model frame, where it stopped with "The
+  following variables are missing from input data: o", and so is, by the
+  spatial test, which reads no variable, a model that transforms its
+  variables; the model frame given as `data` is accepted as it is. A fit
+  with `model = FALSE` whose data are gone is tested on `data` that give its
+  response and fitted values by the Harrison-McCabe test, and by the
+  registered `"szroeter"` and `runHeteroTests(tests = "szroeter")`, which
+  stopped with "object 'gone' not found" (the other five tests tested it
+  already). A fit with `subset =` given by index gave its value already.
+- The registered `"szroeter"` reads its fitted values from the fit, and gives
+  `data` to the test as it is: called with `data = NULL` it reads the model
+  frame, where it stopped with "Missing rows", and numbered data in the order
+  of the fit whose numbers are not those of the fit, such as the complete rows
+  of a fit with `na.omit` numbered again, are taken in that order, where they
+  were refused with "Missing rows". The fitted values are the linear
+  predictor of the fit with its offset, which `fitted()` holds: the numbers
+  `predict(type = "response")` computed, so ties are broken as before, but on
+  a `gam` with an `offset` argument (above). Data it matched by row name before the comparison of the guard
+  are refused by the guard as `performSzroeterTest()` refuses them, with that
+  message.
+- Without `data`, a variable the model frame does not hold under its own name
+  is refused with "The following variables are missing from the model frame
+  of `model`: group. It holds the terms of the model (...)", which says to
+  pass `data`; they stopped with "The following variables are missing from
+  input data". Such a message no longer names the variables of an `offset()`
+  term, which the tests need no more.
+- Numbered data with one row per observation are taken in the order of the
+  fit, and refused when the variable the test reads is not a column of the
+  model frame and two rows of the fit tie on every compared column, as by the
+  rank permutation test and Goldfeld-Quandt: Hartley's test on the tibble of a
+  fit to repeated rows stops with that refusal where it stopped with "Missing
+  rows".
+- A multivariate `lm` is refused with "... needs a model with one response;
+  `model` has 2.", where they stopped with a coercion error. A missing value
+  of the variable at a row of the fit is refused, as before, and the message
+  names the variable.
+- **A fit whose coefficients, residuals or weights were changed after it was
+  fitted is refused by the six, as by the first nine** ("The fitted model
+  does not reproduce its residuals from its design and coefficients", "The
+  weights of the model are not those its coefficients were fitted with", of
+  class `heteroTests_model_context_error`). They returned a value computed
+  from the edited fit: on `lm(mpg ~ wt + qsec, data = mtcars)` with 0.5 added
+  to the coefficient of `wt`, `performGlejserTest(m, mtcars, "wt")` returned
+  t = -0.395 (p = 0.695) and `performParkTest()` t = -0.653 (p = 0.519); with
+  a residual set to 0 by hand, as `tests/testthat/test-pass-a-reference.R` did
+  to make Park's test floor it, `performParkTest()` returned t = 0.911
+  (p = 0.368). That test now makes the residual zero with an observation that
+  lies on the regression of the others.
+- A fit with a zero weight is refused by the six as before, with `data`,
+  without it and on shuffled rows, and through the registered names and the
+  runner. An `mgcv::gam()` fit with smooth terms is tested by the six as
+  before, until the last step settles which tests take it.
+- Unchanged: every other value of a valid call, every refusal of the guard,
+  and every message the test suite pins. A corpus of 16,212 calls, the six,
+  their routes and every other test on 279 combinations of fits, offsets,
+  terms, forms of `data`, dropped rows, row names and classes and on the five
+  fits of the table of the Harrison-McCabe rank, the default battery and the
+  registered names through `runHeteroTests()`, and the examples of the sixteen
+  help pages, returns what it returned before, `identical()`, but for the 594
+  calls of the changes above (`scripts/model-context-identity.R`), eight of
+  them the new refusals in bold; each of the 264 that now return a value, or
+  another one, gives the value of its reference, compared on every number of
+  the result: the same call on the data frame of the fit, on the fit to the
+  complete rows, on the data of the fit in its order, on the same `gam` with
+  an `offset()` term, through the registered spatial test, or, for the rank of
+  the Harrison-McCabe test, the test written out from the fit's own
+  decomposition. The rows of the six tests in Pass A, the Glejser study and
+  the Harrison-McCabe study of `inst/validation/` are reproduced byte for byte
+  at the settings of the committed tables (5000 replications, and 100,000
+  samples for the null distribution of the Harrison-McCabe test). The warnings
+  of the calls of the corpus are those of before, but for three calls of
+  Hartley's test that stopped and now return a value with its warning on
+  unequal groups.
+
+The fourth step moves the five group tests, `performLeveneTest()`,
+`performBrownForsytheTest()`, `performFlignerKilleenTest()`,
+`performBartlettTest()` and `performOBrienTest()`, onto the model context.
+Each matched `data` to the residuals with its own copy of the alignment, by
+row name, or by position when the residuals carry no names; the copies are
+gone. They read the Pearson residuals and the weights from the fit, and the
+`group` at the rows of `data` the comparison confirmed, or, without `data`,
+from the model frame when it holds the group under its own name. The
+observations of the fit whose group is missing are left out with the warning
+"Removed N observations due to missing values in group", as before, on the
+same rows, so the statistic is the one of before. Data that are given are
+matched as for the first fifteen: named data in any order, numbered data in
+fit order. None of the five is registered with the runner, so the change
+reaches their direct calls, and a diagnostic registered with
+`registerDiagnostic()` that calls one, whose refusals by the context are final
+in `runHeteroTests()`, as for the registered names. Every value is
+`identical()` to before but for the changes in bold below.
+
+**A `gam` given its data in another order is matched to them by row name, by
+the group tests too.** The residuals of an `mgcv::gam()` fit carry no names,
+and the five matched `data` to them by position, without an error: given the
+rows of the fit in another order under their own row names, they put each
+residual in the group of another row and returned a wrong value. They now
+match the rows by the row names of the model frame of the fit, and give the
+value on the data in the order of the fit. On `contract_data()`, with the data
+of the fit shuffled, `d[sample(120), ]` after `set.seed(3)`:
+
+| Call, on `d[sample(120), ]` | `gam(y ~ x1 + x2)`, 0.15.0 | Now | `gam(y ~ s(x1) + x2)`, 0.15.0 | Now |
+| --- | ---: | ---: | ---: | ---: |
+| `performLeveneTest(m, data, "group")` | 1.373 | 3.459 | 1.167 | 2.352 |
+| `performBrownForsytheTest(m, data, "group")` | 1.132 | 3.180 | 1.029 | 2.107 |
+| `performFlignerKilleenTest(m, data, "group")` | 3.572 | 9.367 | 2.951 | 5.402 |
+| `performBartlettTest(m, data, "group")` | 4.548 | 12.380 | 3.401 | 9.916 |
+| `performOBrienTest(m, data, "group")` | 1.187 | 3.580 | 1.042 | 3.137 |
+
+Each new value is `identical()` to that of the same call on `d`, which is
+unchanged, and equals, to `1e-10`, the test computed without the package on
+the residuals of the fit and the groups of `d` (`car::leveneTest()` centred at
+the means and at the medians, `stats::fligner.test()`,
+`stats::bartlett.test()`, and O'Brien's transformation written out); so does
+the value on a `gam` with an `offset` argument given its data shuffled. The
+panel tests, the three streaming tests and the replicates of
+`performWhiteTestBootstrap()` still match a `gam` by position until the steps
+that move them; the roadmap records them.
+
+**A fit with `model = FALSE` whose data are gone, given numbered data in
+another order than the fit, is refused by the five.** As by the fifteen tests
+of the first three steps: such data, a tibble or a data frame whose row names
+were reset, in another order, cannot be matched to the observations of the fit
+(named data in any order, numbered data in fit order), and the model frame
+built from them does not give the response of the fit, so the five stop with
+"... cannot use the model frame of `model`: it cannot be rebuilt (...), and
+`data` does not give the response and the fitted values of the fit", of class
+`heteroTests_model_context_error`. They returned a value, that of other rows:
+on `lm(y ~ x1 + x2, data = gone, model = FALSE)` for the 120 observations of
+`contract_data()`, with `gone` removed after the fit and the data given as
+`dplyr::as_tibble(d)[sample(120), ]` after `set.seed(3)`, Levene's test
+returned 1.373 where the data in the order of the fit give 3.459, the
+Brown-Forsythe test 1.132 for 3.180, the Fligner-Killeen test 3.572 for 9.367,
+Bartlett's 4.548 for 12.380 and O'Brien's 1.187 for 3.580.
+
+**A fit whose coefficients, residuals or weights were changed after it was
+fitted is refused by the five, as by the first fifteen** ("The fitted model
+does not reproduce its residuals from its design and coefficients", "The
+weights of the model are not those its coefficients were fitted with", of
+class `heteroTests_model_context_error`). They returned a value computed from
+the edited fit: on `lm(mpg ~ wt + qsec, data = mtcars)` with 0.5 added to the
+coefficient of `wt`, and `cyl` as a factor, `performLeveneTest(m, mtcars,
+"cyl")` returned F = 3.276 (p = 0.0522), `performBrownForsytheTest()` F = 2.639
+(p = 0.0886), `performFlignerKilleenTest()` 4.811 (p = 0.0902),
+`performBartlettTest()` 5.838 (p = 0.0540) and `performOBrienTest()` F = 1.990
+(p = 0.155), the values of the fit before the edit, whose residuals the edit
+leaves unchanged.
+
+Also, for these five:
+
+- Errors that become values. Numbered data that hold only the rows a fit with
+  `na.omit` kept, numbered again, and the tibble in fit order of a fit to data
+  with character row names, stopped with "Missing rows" although they hold
+  every row of the fit, and give the value on the rows of the fit; a group
+  missing at a row of such data is left out, with its warning, as on the data
+  of the fit. A model of the group with an `offset()` term or a transformed
+  variable, such as `log(ypos) ~ log(x1) + group`, stopped without `data` with
+  "The following variables are missing from input data: o" (or the variables
+  of its terms), and is tested on its model frame; the model frame given as
+  `data` is accepted as it is. Weights taken from a column of the data, and a
+  fit with `subset =` given by index, gave their values already.
+- Without `data`, a group the model frame does not hold is refused with "The
+  following variables are missing from the model frame of `model`: group. It
+  holds the terms of the model (...)", which says to pass `data`; they
+  stopped with "The following variables are missing from input data", which
+  also named the variables of the model the tests do not read: `ypos`, `x1`
+  and `g3` for `log(ypos) ~ log(x1) + x2` grouped by a variable `g3` the
+  model does not use, where the message now names `g3` alone. With the model frame
+  of such a fit as `data`, the message names the group alone.
+- A `group` that is `NA` or empty is refused by the Levene, Brown-Forsythe,
+  Fligner-Killeen and Bartlett tests with "`group` must be a single column
+  name.", as O'Brien's test refused it, before `data` is checked; they
+  stopped with "The following variables are missing from input data: NA".
+- Numbered data in another order than the fit, given for a fit to data with
+  character row names, such as its tibble shuffled, stopped with "Missing
+  rows: obs1, obs2, obs3", rows the data hold; they are refused by the guard,
+  as by the other tests built on the context, with "... cannot match the rows
+  of `data` to the observations of the model: ... y, x1, x2 differ from the
+  model frame", of class `heteroTests_data_rows_error`.
+- Numbered data with one row per observation are taken in the order of the
+  fit, and refused when the group is not a column of the model frame and two
+  rows of the fit tie on every compared column, as by Hartley's test: on the
+  tibble of a fit to repeated rows the five stop with that refusal, where they
+  stopped with "Missing rows".
+- A multivariate `lm` is refused with "... needs a model with one response;
+  `model` has 2.", where they stopped with a coercion error, and a fit with
+  `model = FALSE` whose data are gone, without `data`, with the message of the
+  context, where they stopped with "Expected a data.frame for input data".
+- A fit with a zero weight is refused by the five as before, with `data` and
+  on shuffled rows; without `data`, or given its model frame, they name the
+  group the model frame lacks first, as before. An `mgcv::gam()` fit with
+  smooth terms is tested by the five as before, until the last step settles
+  which tests take it.
+- Unchanged: every other value of a valid call, the observations left out
+  for a missing group and their warning, every refusal of the guard, and
+  every message the test suite pins. A corpus of 19,523 calls, the five and
+  every other test on 337 combinations of fits, offsets, terms, forms of
+  `data`, dropped rows, missing groups, row names and classes and on the five
+  fits of the table of the Harrison-McCabe rank, the default battery and the
+  registered names through `runHeteroTests()`, and the examples of the
+  twenty-one help pages, returns what it returned before, `identical()`, but
+  for the 375 calls of the changes above (`scripts/model-context-identity.R`),
+  15 of them the new refusals in bold; each of the 70 that now return a
+  value, or another one, gives the value of its reference, compared on every
+  number of the result: the same call on the data frame of the fit, on the
+  fit to the complete rows, on the data of the fit in its order, or of a model
+  of the group on its data. The rows of the five in Pass B (125,000 p-values
+  at 5000 replications), the full sweep and block 1 of the weighted fits
+  (8,000 at 400) of `inst/validation/` are `identical()` to before,
+  replication by replication, and reproduce the committed tables row for row,
+  the table of Pass B byte for byte. The warnings of the calls of the corpus
+  are those of before, but for five calls that stopped and now return a value
+  with the warning on the missing group.
+
+The fifth step moves the two panel tests, `performPesaranTest()` and
+`performBPRandomEffectsTest()`, and so `runPanelTests()`, which runs them, and
+`performScatterDiagnostic()` onto the model context. They read the Pearson
+residuals and the weights from the fit, and the `id` and `time` of the panel
+tests and the `vars` of the scatter diagnostic at the rows of `data` the
+comparison confirmed, or, for the panel tests without `data`, from the model
+frame when it holds them under their own names. Data that are given are
+matched as for the first twenty tests: named data in any order, numbered data
+in fit order. None of the four is registered with the runner, so the change
+reaches their direct calls and `runPanelTests()`. Every value is
+`identical()` to before but for the changes in bold below.
+
+**The panel tests and the scatter diagnostic match `data` by name.** They
+read the i-th row of `data` with the i-th residual, and since 0.15.0 refused
+the data they could not show to be in that order (*Data in another order than
+the fit*, under 0.15.0). They now match the rows as the other tests do, and
+give the value on the rows of the fit. On the design of that entry, with
+`set.seed(2); dp <- d[sample(n), ]`:
+
+| Call, on `dp` | 0.15.0 | Now, the value on `d` |
+| --- | --- | ---: |
+| `performPesaranTest(m, dp, "id", "time")` | Error: "... it reads `data` by position, the i-th row with the i-th observation, and the rows of `data`, matched by name, are not in the order of the fit." | -0.987 (p = 0.324) |
+| `performBPRandomEffectsTest(m, dp, "id")` | Error, the same | 1.187 (p = 0.276) |
+| `performScatterDiagnostic(m, dp, "x")` | Error, the same | 0.468 |
+| `runPanelTests(m, dp, "id", "time")` | Error, the same | 1.187 and -0.987 |
+
+Before 0.15.0 the three returned -0.392, 0.506 and -0.080, values of other
+rows. So do rows after those of the fit, `rbind(d, d[1:5, ])`, which they
+refused for their number ("requires `data` with 120 observations to match the
+fitted model, got 125"); a fit to a subset given by index, given its data; and
+the tibble in the order of the fit of a fit to data with character row names,
+on which they stopped with "Missing rows: obs1, obs2, obs3" or "the row names
+of `data` are not those of the fit".
+
+**On a fit that dropped rows, the random-effects test and the scatter
+diagnostic give the value of its observations.** On the 120 observations of
+`contract_data()` (`tests/testthat/helper-test-recipes.R`) with `x2` missing in
+rows 3, 7 and 11, `m <- lm(y ~ x1 + x2, data = d)` drops them, and
+`performBPRandomEffectsTest(m, d, "id")` refused the full data with
+"Breusch-Pagan random effects test requires `data` with 117 observations to
+match the fitted model, got 120.", as did the scatter diagnostic and
+`runPanelTests()`. They give the value of the fit to the complete rows: the
+random-effects test 2.016 (p = 0.156), with its warning on unequal panel
+lengths, and the scatter diagnostic 0.343 for `x1` and -0.163 for `x2`, on the
+full data, shuffled or as a tibble. Pesaran's test now reaches the panel of
+such a fit, which is unbalanced: units 1 and 2 keep 8 and 9 of their 10
+periods, and the test refuses it (below), where it stopped on the complete rows
+with "number of items to replace is not a multiple of replacement length". On a
+fit that drops every row of a unit, here the ten rows of unit 12, the panel
+stays balanced: Pesaran's
+test refused the full data with "requires `data` with 110 observations to match
+the fitted model, got 120.", and gives -0.0607 (p = 0.952), the value of the fit
+to the 110 complete rows, and the random-effects test 4.083 (p = 0.043).
+
+**Pesaran's test refuses an unbalanced panel** (decided by the author on
+2026-10-24). It arranges the residuals in a matrix of periods by units, and a
+unit observed at fewer periods than the panel holds stopped it with "number of
+items to replace is not a multiple of replacement length", or, when its number
+of periods divides that of the panel, had its residuals recycled over the
+periods it lacks, and the test returned a wrong value without an error. On the
+120 observations of `contract_data()` without the first five rows, unit 1
+keeps 5 of its 10 periods, and `performPesaranTest(m, d, "id", "time")`
+returned 0.234 (p = 0.815), where `plm::pcdtest(model = "pooling")`, which
+correlates each pair of units over the periods both hold (Pesaran 2004),
+gives -0.373. The test now stops, on every form of `data` and through
+`runPanelTests()`, with ``performPesaranTest() needs a balanced panel, every
+unit observed at the same periods, and the panel of the fit is unbalanced: 1 of
+its 12 units is observed at fewer of its 10 periods, id = 1 at 5 of them. ...``,
+which points to `plm::pcdtest()` for such a panel, of class
+`heteroTests_model_context_error`. The full data of a fit that dropped such
+rows, which it refused for their number of rows, are refused so too. A fit that
+drops every row of a unit keeps a balanced panel, and is tested (above). The
+refusal went when a later change computed the statistic of an unbalanced
+panel from the periods each pair of units shares (*Pesaran's test on an
+unbalanced panel*, above).
+
+**Pesaran's test refuses a pair of `id` and `time` that holds more than one
+observation of the fit** (decided 2026-10-18). It arranges the residuals in a
+matrix of periods by units, and a repeated pair put one of its observations in
+the cell of another period, without an error: on `contract_data()` with the
+second observation of unit 1 moved to period 5, `d$time[2] <- 5L`, it returned
+0.516 (p = 0.606), where the panel gives 0.264 (p = 0.792). It now stops with
+``performPesaranTest() needs one observation of the fit for each pair of `id`
+and `time`, and 1 pair holds more than one: id = 1 and time = 5 (2
+observations). ...``, of class `heteroTests_model_context_error`, and so does
+`runPanelTests()`, also on a fit with `na.exclude` (below), where it returned
+0.253 with `d$x2[50] <- NA`. With the period of the first observation,
+`d$time[2] <- 1L`, it returned the value of the panel by the chance of the
+order of the rows, and now stops too. The random-effects test reads no period
+and is unchanged.
+
+**A `gam` given its data in another order is matched to them by row name, by
+the panel tests and the scatter diagnostic too.** Their check of the order of
+0.15.0 compared the row names of `data` with the names of the residuals,
+which those of an `mgcv::gam()` fit lack, so they read such data by position
+and returned a wrong value without an error. On `contract_data()`, with the
+data of the fit shuffled, `d[sample(120), ]` after `set.seed(3)`:
+
+| Call, on `d[sample(120), ]` | `gam(y ~ x1 + x2)`, 0.15.0 | Now | `gam(y ~ s(x1) + x2)`, 0.15.0 | Now |
+| --- | ---: | ---: | ---: | ---: |
+| `performPesaranTest(m, data, "id", "time")` | -0.570 | 0.264 | -0.456 | -0.036 |
+| `performBPRandomEffectsTest(m, data, "id")` | 0.163 | 3.100 | 0.070 | 4.311 |
+| `performScatterDiagnostic(m, data, c("x1", "x2"))` | 0.011, -0.119 | 0.332, -0.167 | -0.012, -0.067 | 0.308, -0.120 |
+
+Each new value is `identical()` to that of the same call on `d`, which is
+unchanged, and equals, to `1e-10`, the test written out without the package
+on the residuals of the fit and the rows of `d` that carry their names.
+
+**A fit with `model = FALSE` whose data are gone, given numbered data in
+another order than the fit, is refused by the four**, with "... cannot use
+the model frame of `model`: it cannot be rebuilt (...), and `data` does not
+give the response and the fitted values of the fit", of class
+`heteroTests_model_context_error`, as by the first twenty. They returned the
+values of other rows: on `lm(y ~ x1 + x2, data = gone, model = FALSE)` for the
+120 observations of `contract_data()`, with `gone` removed after the fit and
+the data given as `dplyr::as_tibble(d)[sample(120), ]` after `set.seed(3)`,
+Pesaran's test returned -0.570 where the data in the order of the fit give
+0.264, the random-effects test 0.163 for 3.100 and the scatter diagnostic
+0.011 for 0.332.
+
+**A fit whose coefficients, residuals or weights were changed after it was
+fitted is refused by the four, as by the first twenty** ("The fitted model
+does not reproduce its residuals from its design and coefficients", "The
+weights of the model are not those its coefficients were fitted with", of
+class `heteroTests_model_context_error`). They returned the values of the fit
+before the edit, whose residuals the edit leaves unchanged: on
+`lm(mpg ~ wt + qsec, data = mtcars)` with 0.5 added to the coefficient of
+`wt`, and units and periods `mtcars$id <- rep(1:8, each = 4)` and
+`mtcars$time <- rep(1:4, 8)`, Pesaran's test returned 0.830 (p = 0.407), the
+random-effects test 16.70 (p = 4.4e-05) and the scatter diagnostic -0.141 for
+`wt` and 0.345 for `qsec`.
+
+Also, for these four:
+
+- Errors that become values, besides those above: the complete rows of a fit
+  with `na.omit` numbered again, the tibble of such a fit and the tibble it
+  was fitted on, which they refused with "Missing rows" or for their number of
+  rows, give the value on the rows of the fit (Pesaran's test where that
+  panel is balanced, and on an unbalanced one since *Pesaran's test on an
+  unbalanced panel*, above), and so does a fit with `model = FALSE` whose data are
+  gone, given its rows shuffled under their own row names.
+- Without `data`, the panel tests read `id` and `time` from the model frame,
+  when the model uses them under their own names, as before, and refuse them
+  otherwise with "The following variables are missing from the model frame
+  of `model`: id, time. It holds the terms of the model (...)", which says to
+  pass `data`, of class `heteroTests_model_context_error`; they stopped with
+  "`id` and `time` must be columns in `data`." (or "`id` must be a column in
+  `data`."), which they still give for data that lack them. The scatter
+  diagnostic and `runPanelTests()` need `data`, as before.
+- Numbered data with one row per observation are taken in the order of the
+  fit, and refused when the columns they read are not columns of the model
+  frame and two rows of the fit tie on every compared column, as by the tests
+  of the first four steps: on the tibble of a fit to repeated rows the panel
+  tests stop with that refusal, where they stopped with "Missing rows: 1.1,
+  2.1, 3.1"; the scatter diagnostic, which reads `x1` and `x2`, columns of the
+  frame, gives the value of the fit.
+- A multivariate `lm` is refused with "... needs a model with one response;
+  `model` has 2.", where they stopped on its number of rows, and a fit with
+  `model = FALSE` whose data are gone, without `data`, with the message of the
+  context, where the panel tests stopped with "`data` must be a data frame.".
+  An edited fit given its rows shuffled, or without `data`, is refused with the
+  message of the edit, where they refused the order or lacked `id`.
+- Pesaran's test refuses a unit or a period missing at an observation of the
+  fit with "Pesaran CD test requires `data` to contain the rows used to fit
+  the model. Missing rows: 5, where time, the `time` variable, is missing.",
+  where it stopped with "number of items to replace is not a multiple of
+  replacement length"; and a fit to repeated rows with the refusal of the
+  repeated pairs, where it stopped on the unbalanced panel. The random-effects
+  test leaves an observation whose unit is missing out of its sums by unit,
+  as before, and takes an unbalanced panel, with its warning on unequal panel
+  lengths, as before. The message "number of items to replace is not a
+  multiple of replacement length" can no longer be reached.
+- A fit with `na.action = na.exclude` is read as before, until the step of the
+  model context that moves `na.exclude` (decided by the author on
+  2026-10-24): its residuals, padded with `NA` at the rows it dropped, against
+  the rows of `data` by position, so the random-effects statistic and the
+  correlations of the scatter diagnostic are `NA`, and data in another order
+  are refused. The refusals of Pesaran's test above, of a missing unit or
+  period, of a repeated pair and of an unbalanced panel, apply to the rows it
+  reads so, the rows of `data`, those the fit dropped included: they do not
+  see that the panel of the fit itself is unbalanced, and the statistic is
+  computed as before, with `NA` residuals at the rows the fit dropped, until
+  that step. With `x2` missing in rows 3, 7 and 11 of `contract_data()`, whose
+  panel is balanced in `data` but not in the fit, Pesaran's test returns 0.713
+  on such a fit, as before, where `plm::pcdtest()` gives 0.189 on the rows of
+  the fit and the same fit with `na.omit` was refused (it gives 0.189 since
+  *Pesaran's test on an unbalanced panel*, above).
+- The scatter diagnostic refuses a fit with a zero weight before it matches
+  `data`, as before; the panel tests refuse it after, as before. A model
+  written with the columns of a data frame, `lm(d$y ~ d$x + d$z)`, given `d`,
+  is refused by the four with "The following variables are missing from input
+  data: d.", as by the tests built on the context, where the scatter
+  diagnostic and the panel tests said that no column of the model frame can be
+  compared.
+- Unchanged: every other value of a valid call, every refusal of the guard,
+  and every message the test suite pins. A corpus of 22,542 calls, the four,
+  the options of `runPanelTests()` and every other test on 356 combinations
+  of fits, offsets, terms, forms of `data`, dropped rows, missing groups, row
+  names, panels and classes, on the five fits of the table of the
+  Harrison-McCabe rank and the eight designs of White's degrees of freedom,
+  the default battery and the registered names through `runHeteroTests()`,
+  and the examples of the twenty-five help pages, returns what it returned
+  before, `identical()`, but for the 566 calls of the changes above
+  (`scripts/model-context-identity.R`), 22 of them the new refusals in bold;
+  each of the 352 that now return a value, or another one, gives the value of
+  its reference, compared on every number of the result: the same call on the
+  data frame of the fit, on the fit to the complete rows, on the data of a
+  `gam` in its order, or on the fit with the factor of `cut()` computed
+  beforehand. The rows of the two panel tests in the full sweep and block 1 of
+  the weighted fits of `inst/validation/` (2,400 p-values at 400
+  replications) are `identical()` to before, replication by replication, and
+  reproduce the committed tables. The warnings of the calls of the corpus are
+  those of before, but for 54 calls on fits that dropped some rows of some
+  units, on which the random-effects test now returns a value with its
+  warning on unequal panel lengths, directly or through `runPanelTests()`.
+
+The sixth step moves the tests computed from the model alone onto the model
+context: `performSpearmanTest()`, `performHarveyTest()`,
+`performArchLMTest()`, `performMcLeodLiTest()`, `performCookWeisbergTest()`
+and `performNCVTest()`, `performSpreadLevelTest()`,
+`performDavidianCarrollTest()` and `performVarianceFormTest()`, with
+`fitWLS()`, and so their registered names (`"cook_weisberg"`, `"ncv"`,
+`"spread_level"`, `"variance_form"`), `runTimeSeriesTests()`, and the
+runners with them. They read the residuals, fitted values, design and
+weights from the fit, as before, and nothing from `data`, which they now
+match to the observations of the fit as every other test does, and so does
+RESET (below). A second formula, the `var_formula` of the Cook-Weisberg test, of the variance
+form test and of `fitWLS()`, and the `against` of the variance form test, is
+evaluated on the rows of `data` the comparison confirmed, or, without
+`data`, on the model frame. Every value is `identical()` to before but for
+the changes in bold below.
+
+**The tests computed from the model alone match `data` as every other test
+does** (decision 31 of the design of the model context, decided by the
+author on 2026-10-26: one rule for every test). The nine, RESET and
+`fitWLS()` without `var_formula` read nothing from `data`, and only checked
+that it held the variables of the model and the row names of the fit; RESET
+kept that check through the second step. They now match `data` through the
+guard, named data in any order and numbered data in the order of the fit, so
+data the guard cannot match are refused, with its message and class
+(`heteroTests_data_rows_error`), where they returned the value of the fit,
+correct since they read nothing from `data`: numbered data in another order,
+rows in front of those of the fit and repeated row names, 1,491 calls of the
+corpus below. Numbered data in the order of the fit whose row numbers
+are not the fit's, which the check of 0.15.0 refused, are taken. On `mtcars`
+with its row names reset, `d <- mtcars; rownames(d) <- NULL` and
+`m <- lm(mpg ~ wt + qsec, data = d)`:
+
+| Call | 0.15.0 | Now |
+| --- | --- | --- |
+| `performSpearmanTest(m, dplyr::as_tibble(d)[sample(32), ])`, after `set.seed(1)` | 1.445 (p = 0.159) | Error, the refusal of the guard: "... cannot match the rows of `data` to the observations of the model: `data` has no row names of its own ..." |
+| `performSpearmanTest(m, rbind(d[1:5, ], d))` | 1.445 (p = 0.159) | Error, the same |
+| `performSpearmanTest(m, dup)`, with `dup <- rbind(d, d[1, ])` and `attr(dup, "row.names") <- c(1:32, 1L)` | 1.445 (p = 0.159) | Error: "... the row names of `data` are not unique ..." |
+| `performSpearmanTest(mn, renumbered)`, the 30 complete rows of a fit that dropped rows 3 and 7, `mn <- lm(mpg ~ wt + qsec, data = dn)`, numbered again | Error: "Spearman rank requires `data` to contain the rows used to fit the model. Missing rows: 31, 32" | 0.951 (p = 0.35), the value on the full data `dn` |
+
+The same holds for the other eight, RESET (6.731 on `d`) and `fitWLS()`,
+which ignored `data`; named data in another order, `d[sample(32), ]`, give the
+value on `d`, as before. A `data` that is neither a data frame nor `NULL` is
+refused by the nine and RESET as before, with the message "`data` in ... must
+be a data frame or NULL." of each test, and now by `fitWLS()` too, with
+"`data` in fitWLS() must be a data frame or NULL.": without `var_formula` it
+ignored such a `data`, a list or a matrix, and returned the fit (with
+`var_formula` it refused it, and keeps its message).
+
+**A second formula is evaluated on the rows of the fit.** `fitWLS()` and the
+variance form test matched the rows of `data` to the fit by row name, and,
+when no name matched and the numbers of rows agreed, took them by position,
+without a check: on a tibble in another order than the fit they evaluated the
+variance formula on other rows and returned another value without an error.
+They now match `data` as the other tests do, named data in any order and
+numbered data in the order of the fit, and refuse other data with the
+message and class of the guard (`heteroTests_data_rows_error`).
+The Cook-Weisberg test with `var_formula` refused such data already. On
+`mtcars` with its row names reset, `d <- mtcars; rownames(d) <- NULL`,
+`m <- lm(mpg ~ wt + qsec, data = d)` and
+`tb <- dplyr::as_tibble(d)[sample(32), ]` after `set.seed(1)`:
+
+| Call, on `tb` | 0.15.0 | Now | The value on `d` |
+| --- | --- | --- | --- |
+| `coef(fitWLS(m, tb, var_formula = ~ hp))` | 22.01, -4.953, 0.8037 | Error: "fitWLS() cannot match the rows of `data` ..." | 16.38, -4.587, 1.028 |
+| `performVarianceFormTest(m, tb, var_formula = ~ hp)` | 0.0203 (p = 0.888) | Error, the same | 0.0631 (p = 0.803) |
+| `performVarianceFormTest(m, tb, against = ~ hp)` | 0.0890 (p = 0.768) | Error, the same | 0.00297 (p = 0.957) |
+
+So are rows in front of those of the fit, `rbind(d[1:5, ], d)` (0.0105 with
+`var_formula = ~ hp`), repeated row names, and the tibble of a fit to
+repeated rows, whose rows tie on every column of the model frame, so that a
+variable of the formula beyond it could belong to other rows. Named data in
+another order, `d[sample(32), ]`, give the value on `d`, as before.
+
+**A variable of a second formula is read from `data` or the model frame,
+never from the workspace** (decided on 2026-10-16). Without `data`, a
+variable that the model frame did not hold under its own name was found in
+the environment of the formula, whatever the order of its values; and
+`fitWLS()` and the variance form test did so with `data` that lacked it too.
+With `hp2 <- rev(mtcars$hp)` in the workspace and
+`m <- lm(mpg ~ wt + qsec, data = mtcars)`,
+`performCookWeisbergTest(m, var_formula = ~ hp2)` returned 1.453
+(p = 0.228), `performVarianceFormTest(m, var_formula = ~ hp2)` 4.374
+(p = 0.045), `performVarianceFormTest(m, against = ~ hp2)` 0.266 (p = 0.61),
+and `fitWLS(m, var_formula = ~ hp2)` a fit with the weights of `hp2`. They now
+stop with "The following variables are missing from the model frame of
+`model`: hp2. ... Variables that are not part of the model must be supplied
+through `data`: those of `var_formula` are not read from the workspace.", of
+class `heteroTests_model_context_error`, and with `data` that lack it with
+"The following variables are missing from input data: hp2.", as the
+Cook-Weisberg test did. The functions of the formula, such as `log()` or
+`I()`, are found as before, a variable of the model is read from the model
+frame, and a constant, a value of length one such as `k <- 2` in
+`~ I(hp^k)` or `pi`, is not a variable and is evaluated as R evaluates it, as
+before: on `lm(mpg ~ wt + hp, data = mtcars)`,
+`performCookWeisbergTest(m, var_formula = ~ I(hp^k))` gives 0.5496
+(p = 0.458), the value of `car::ncvTest(m, ~ I(hp^2))`, and given `mtcars`
+too, where it refused `k` with "The following variables are missing from
+input data: k.".
+
+**A fit with `model = FALSE` whose data changed after the fit is refused by
+the tests computed from the model alone and `fitWLS()`**, with or without
+`data`, with "... cannot use the model frame of `model`: the model was fitted
+with `model = FALSE`, so its model frame is rebuilt from the data it was
+fitted on, and the rebuilt frame no longer holds the response or the fitted
+values of the fit ...", of class `heteroTests_data_rows_error`, as by every
+other test built on the context and by RESET since the second step. They read
+that frame, or ignored it, and returned a value: with
+`d0 <- mtcars; m0 <- lm(mpg ~ wt + qsec, data = d0, model = FALSE)` and then
+`d0 <- d0[order(d0$wt), ]`, the variance form test returned 5.817
+(p = 0.0035) where the fit gives 1.765 (p = 0.179), Harvey's test, on the
+design of the reordered data, 3.041 (p = 0.219) for 2.446 (p = 0.294), and
+`fitWLS(m0)` refitted the reordered response, with coefficients 28.42, -5.863
+and 0.594 for 14.08, -4.728 and 1.194; the others gave the value of the fit,
+which their statistic does not take from the frame (Spearman's test 1.445,
+the Cook-Weisberg test 0.591).
+
+**A fit whose coefficients, residuals or weights were changed after it was
+fitted is refused by the nine tests**, as by the first twenty-four ("The
+fitted model does not reproduce its residuals from its design and
+coefficients", "The weights of the model are not those its coefficients were
+fitted with", of class `heteroTests_model_context_error`). They returned the
+values of the fit before the edit: on `lm(mpg ~ wt + qsec, data = mtcars)`
+with 0.5 added to the coefficient of `wt`, Spearman's test 1.445
+(p = 0.159), Harvey's 2.446, the ARCH LM test 3.457 with `lags = 2`,
+McLeod-Li 10.74 with `lags = 5`, Cook-Weisberg 0.591, the spread-level test 0.438, Davidian-Carroll 1.746 and
+the variance form test 1.765. `fitWLS()`, which is not a test, refits such a
+fit as before.
+
+**A fit with `model = FALSE` whose data are gone is refused without `data`**,
+with the message of the context, "... cannot use the model frame of
+`model`: it cannot be rebuilt (...)", of class
+`heteroTests_model_context_error`: the Cook-Weisberg, NCV, spread-level
+and Davidian-Carroll tests returned the value of the fit (the Cook-Weisberg
+test 0.591 on `mtcars`), which nothing checked. Given numbered data in another
+order than the fit, such as a shuffled tibble, they are refused with the same
+message, as the first twenty-four are: those data do not give the response
+of the fit.
+
+**`performDavidianCarrollTest()` refuses a multivariate `lm`** with "...
+needs a model with one response; `model` has 2.": without `data` it returned
+2.064 (p = 0.136) on `lm(cbind(mpg, qsec) ~ wt + hp, data = mtcars)`, a
+statistic of neither response. The other eight and `fitWLS()` stopped on
+such a fit with a coercion error ("'length = 4' in coercion to
+'logical(1)'"), "incompatible dimensions" or the count of its rows, and now
+give that message.
+
+Also, for these:
+
+- Errors that become values: a fit with `model = FALSE` whose data are gone,
+  given `data` that give its response and fitted values, in the order of the
+  fit or under their own row names in another order, is tested on them:
+  Spearman's, Harvey's, the ARCH LM, McLeod-Li and variance form tests
+  stopped with "Input data must be a data.frame", RESET refused it, and
+  `fitWLS()` stopped with "object 'gone' not found"; on `mtcars`, Harvey's
+  test gives 2.446 and RESET 6.731 (p = 0.0043), the values of the fit with
+  its model frame. The nine and RESET, with or without a second formula, give
+  the value of the fit on numbered data with one row per observation in the
+  order of the fit, such as the complete rows of a fit that dropped rows
+  numbered again, the tibble of a fit to data with character row names or of
+  a fit to repeated rows, which they refused with "Missing rows" (above), and
+  on the data of an `mgcv::gam()` fit that dropped rows, which they refused
+  for their number of rows.
+- Values that change: the Cook-Weisberg test with `var_formula` on an
+  `mgcv::gam()` fit given its data in another order under their own row
+  names: the residuals of a `gam` carry no names, and it read such data by
+  position (N17); it matches them by the row names of the model frame of the
+  `gam`, and gives the value of the data in the order of the fit.
+- Messages: without `data`, a variable of a second formula that the model
+  frame does not hold under its own name, `z` for `lm(y ~ x1 + x2)` or `x1`
+  for `lm(log(y) ~ log(x1) + x2)`, is refused with the message above, where
+  the formula stopped with "object 'z' not found" or "`var_formula` could not
+  be evaluated (...)"; with the model frame as `data`, with "The following
+  variables are missing from input data"; with a second formula, data the
+  guard refuses are refused before the model is checked, so that on such data
+  a weighted fit, which the variance form test refuses, or a fit with a zero
+  weight, which the Cook-Weisberg test refuses, meets the refusal of the guard
+  first; repeated row names and the tibble of a fit to repeated rows are
+  refused by the guard, where the variance form test said "Variance form test
+  requires `data` to contain the rows used to fit the model. Missing rows:
+  ..."; a multivariate `lm` and a
+  fit with `model = FALSE` whose data are gone are refused with the messages
+  of the context; and the Cook-Weisberg test with `var_formula` refuses a
+  variable of the formula that is missing at an observation of the fit with
+  "Cook-Weisberg test requires `data` to contain the rows used to fit the
+  model. Missing rows: 5, where z, the `var_formula` variable, is missing.",
+  with the warning "Removed 1 observations due to missing values in z" of
+  before, where it said "Missing rows: 5".
+- Unchanged: every other value of a valid call, every refusal of the guard, the
+  zero-weight refusals and the acceptance of a zero weight by RESET, a smooth
+  `gam` tested as before by the nine, and every message the test suite pins.
+  A corpus of 30,344 calls, the nine, `fitWLS()`, their second formulas, with
+  variables and with constants, registered names and `runTimeSeriesTests()`,
+  and every other test, on 361
+  combinations of fits, offsets, terms, forms of `data`, dropped rows,
+  missing groups and variables, row names, panels and classes, on the five
+  fits of the table of the Harrison-McCabe rank and the eight designs of
+  White's degrees of freedom, the default battery and the registered names
+  through `runHeteroTests()`, and the examples of the thirty-six help pages,
+  returns what it returned before, `identical()`, but for the 4,090 calls of
+  the changes above (`scripts/model-context-identity.R`), 2,674 of them the new
+  refusals in bold, 1,491 of those of data the guard refuses (decision 31)
+  and 576 with a variable of the workspace; each of the 350 that now return a
+  value, or another one, gives the value of its reference, compared on every
+  number of the result: the same call on the data frame of the fit, on the fit
+  to the complete rows, or on the data of a `gam` in its order, the same
+  formula with the number in place of a constant, or the test a route
+  computes. The warnings of the calls of the corpus are those of before.
+
+### The caches
+
+The caches of `cachedTest()` and of `runHeteroTests(use_cache = TRUE)`, its
+default, and the cache of the checks the tests make first, follow a contract
+decided on 2026-10-21, set out on `?cachedTest` and in the *Architecture*
+page. The changes in bold change what calls return.
+
+**A cached result is the result of its own call.** The two caches kept a
+result under a key of the test, the coefficients and the residuals of the
+model and `data`, and fits that shared those shared one entry: the second
+call returned the result of the first. `lm(mpg ~ wt + offset(qsec), data =
+mtcars)` and `lm(I(mpg - qsec) ~ wt, data = mtcars)` have the same
+coefficients and residuals to the last bit and other fitted values; after
+the first, `cachedTest("cook_weisberg", <second>, mtcars)` returned 0.747
+(p = 0.388) in place of its own 0.0728 (p = 0.787), `"spread_level"` 0.650
+in place of 1.413 and `"szroeter"` 1.111 in place of 0.673, and
+`runHeteroTests()` returned the battery of the first fit with the first fit
+as `attr(, "model")`. A fit whose weights were changed after the fit, which
+the tests refuse ("The weights of the model are not those its coefficients
+were fitted with"), returned the result of the fit before the change
+(Koenker's 0.481 for `lm(mpg ~ wt, data = mtcars, weights = 1 / wt)` with
+its weights reversed), and so did a fit with `model = FALSE` whose data
+changed after the fit, which the tests refuse too. The key now holds the
+test and its arguments and what the test reads of the model and the data:
+the class, family and link of the model; from the model context of the fit,
+its model frame, response, design, residuals and fitted values, prior
+weights, total offset, rank, aliased coefficients, the names of its
+observations and its `na.action`; its coefficients, the weights it stores,
+its terms with their `predvars`, call, contrasts, levels, residual degrees
+of freedom and attributes, and whether it keeps its model frame; and
+`data`, whole. Each such call computes its own result. The key leaves out
+the environment of the formula and the options of the session, which
+`?cachedTest` sets out.
+
+**The checks of the model are those of the model.** The checks the tests
+make first are kept in a cache whose key held the class, the coefficients,
+the residuals and the residual degrees of freedom of the model. A fit that
+shares those with another and has other fitted values passed, on a hit, the
+refusal of a fit with an R-squared above 0.999 that it meets alone. With
+`set.seed(5); x <- runif(80, 1, 5); e <- residuals(lm(rnorm(80) ~ x))`, the
+fits `ma <- lm(y ~ x, data.frame(y = 1 + 2 * x + e, x = x))` and
+`mc <- lm(y ~ x, data.frame(y = 1 + 200 * x + e, x = 100 * x))` have the
+same coefficients and residuals to rounding, and the same to the last bit
+once `mc[c("coefficients", "residuals")] <- ma[c("coefficients",
+"residuals")]`; after `performKoenkerTest(ma)`, 2.047 (p = 0.153),
+`performKoenkerTest(mc)` returned the same value, where alone it stops with
+"Model appears perfectly explained (R² = 1.000)", as it now does after
+`ma` too. The key holds the fitted values, the weights, the prior weights,
+the offset, the family, the link, the rank and the intercept too. The checks
+of `data` sorted in their key the names they were given, which drops NA:
+after a check of an NA name, refused, every check of the same columns with
+no names was answered with its refusal. The internal check
+`rvalidateDataInputs()` shows it: after
+`rvalidateDataInputs(mtcars, required_vars = NA, min_obs = 0)`,
+`performKoenkerTest(lm(mpg ~ wt + qsec, data = mtcars), mtcars)` stopped
+with "The following variables are missing from input data: NA"; it returns
+3.086 (p = 0.214). Since the review of increment 4 (#143) the group tests
+refuse an NA group before that check. The key keeps the names as they are
+given, NA, empty names and their order included, which the message on the
+missing ones keeps; and the checks of the sample size and of the
+requirements of a test are keyed on the name of the test as it is given,
+which they report, rather than in lower case.
+
+**A test that draws random numbers is never cached.** The package flags each
+test it registers: `"wild_bootstrap"`, `"white_bootstrap"`,
+`"rank_permutation"` and `"spatial_hetero"` draw them, and run on every
+call, through `cachedTest()`, `runHeteroTests()`, the registry and
+`runHeteroTestsParallel()` alike, and a battery that includes one is not
+stored as a whole. Before, a call with another seed returned the replicates
+of the first, and a call answered from the cache drew no random numbers, so
+that those drawn after it were not those of a call without the cache: with
+`m <- lm(mpg ~ wt + qsec, data = mtcars)`, `set.seed(2);
+cachedTest("wild_bootstrap", m, mtcars)` after the same call from
+`set.seed(1)`, p = 0.233, returned that p-value; it returns its own, 0.238.
+A seeded call now returns what it returns without the cache and leaves the
+generator where it leaves it, which `tests/testthat/test-cache-contract.R`
+checks for each of the four, with a draw after each call. A diagnostic added
+with `registerDiagnostic()` or `test_factory$register()`, or a name of the
+package registered again, is not cached either, since what it draws or reads
+cannot be known; `"box_m"`, which tests data, neither. A result whose
+computation moved `.Random.seed` is not stored.
+
+**The check of normality draws its sample on every call.** The check that
+`performBartlettTest()` makes of its residuals tests a random sample of
+5,000 values of a longer vector, and its result was kept in the validation
+cache: a second identical call drew no random numbers, and the stream after
+it was not that of a call without the cache. It is no longer stored. With
+`set.seed(1); d <- data.frame(x = runif(6000), g = factor(rep(c("a", "b",
+"c"), 2000))); d$y <- 1 + d$x + rnorm(6000)` and `m <- lm(y ~ x, data =
+d)`, two calls `performBartlettTest(m, d, group = "g")` from `set.seed(2)`
+left `runif(1)` at 0.588, and leave it at 0.963, as two calls without the
+cache did.
+
+**`runHeteroTests()` stores no call that fell back on a diagnostic the
+caches may not hold.** When a test fails, the runner falls back on another,
+which can be a diagnostic a user registered under the name of a fallback, or
+a resampling test, and the call was stored with its result: after
+`registerDiagnostic("breusch_pagan", <a function that counts its calls>)`,
+`runHeteroTests(m, d, tests = "white")` on a fit of 15 observations, which
+White's test refuses, returned the first count on every call. It returns a
+new one. A fallback of the package, such as White's test without its cross
+products, may be kept (found by the review of #144).
+
+**`runHeteroTests(use_cache = TRUE)`, the default, returns the suite of
+`use_cache = FALSE`.** A result computed through the cache lacked the mark
+`attr(, "extras")$streaming = FALSE` that the route without it adds; the two
+now return `identical()` suites, on a first call and on one answered from
+the cache.
+
+**The names of the estimates of `performQuantileRegressionTest()` do not
+depend on the options.** They were `"tau_"` and `format(taus)`, so that
+`options(digits = 1)` named `c(0.25, 0.75)` `"tau_0.2"` and `"tau_0.8"`, and
+a result read from the cache kept the names of the call that stored it. They
+are formatted with the digits, the penalty for scientific notation and the
+decimal mark of R's defaults: `"tau_0.25"` and `"tau_0.75"` whatever the
+options, the names of the default options before.
+
+- Each cache is bounded and drops the entry used least recently: those of
+  `cachedTest()` and of whole calls of `runHeteroTests()` hold at most
+  `getOption("heteroTests.cache_size", 100)` results each, the validation
+  cache `getOption("heteroTests.validation_cache_size", 1000)`, which it held
+  since #97 but by overwriting the entry stored first. `0` turns a cache
+  off. The two caches of results grew without bound, by about 33 KB per new
+  model for `runHeteroTests()` and 25 KB per call for `cachedTest()`; an
+  entry now keeps the result without the model it carries (3.4 KB for White's
+  test on `mtcars`, 31 KB with it), and the model of the call is put back on
+  a hit. The keys were the names of variables of an environment, which R
+  never frees, and each left 0.2 to 0.3 KB after `clearTestCache()` and
+  `clearAnalysisCache()`: a call of `runHeteroTests()` left three, 0.6 KB
+  on a model of two regressors, the 0.8 KB per call that long simulations
+  kept. The keys are a character vector now, and a cleared cache leaves
+  nothing.
+- The key holds values, not environments: a model refitted to the same data
+  in another environment is answered from the cache, with the model of the
+  call as `attr(, "model")`, `identical()` to the result the test computes.
+  It is built from the model context without `data`, and hashed with
+  xxhash64 once per call of `runHeteroTests()`, where 0.15.0 hashed the
+  residuals and the data once for the call and once for each test: about
+  0.7 ms on a fit of 1,000 observations, 2.3 ms on 10,000 and 20 ms on
+  100,000, against 0.2, 1.5 and 15 ms for the key of 0.15.0 and 2.6, 8.4 and
+  80 ms for the Cook-Weisberg test.
+- `runHeteroTests(use_cache = TRUE)` on a Gaussian `glm` with a zero prior
+  weight, which the tests refuse, no longer warns "observations with zero
+  weight not used for calculating dispersion": the warning came from the key
+  of 0.15.0, which called `sigma()` on the model. A fit with `model = FALSE`
+  whose data are gone, whose model frame the tests rebuild from `data`, runs
+  without the cache, since its key cannot be built without `data`.
+- Unchanged: every value computed without the cache, and every value read
+  from it on the call that stored it. On the 342 cells of the matrix of the
+  model context and of the rank of the Harrison-McCabe test, 16,524 records
+  (the default battery of `runHeteroTests()` and `cachedTest()` with each of
+  the eleven deterministic tests, without the cache, on empty caches and once
+  more, and the three resampling tests on twelve cells) are `identical()` to
+  those of 0.15.0, value, warnings and the random numbers drawn after the
+  call, but for four groups. The batteries run with the cache carry the mark
+  `extras$streaming` (above) in the 214 cells where no test fell back or
+  stopped, and all 1,026 of them, on empty caches, once more and in a pass
+  over all the cells that never clears the caches, are the battery without
+  the cache, value and numbers drawn after it. In that pass, 558 calls (63
+  batteries, 495 single tests) that 0.15.0 answered with the entry of
+  another cell, such as a fit with an `offset()` term with that of the same
+  fit with an `offset` argument, or a fit weighted by a vector of the
+  workspace with that of the same fit weighted by a column of the data, now
+  compute their own value, which equals the call without the cache. 26
+  resampling calls repeated from the same seed, which 0.15.0 answered from
+  the cache, draw their replicates again, and the numbers drawn after them
+  are those of a call without the cache. And the warnings of the five cells
+  of the zero prior weight and of two calls of the quantile regression test
+  on a fit with `model = FALSE` whose data are gone (above). None of the
+  12,384 calls answered from the cache, or run with it, returns a value
+  other than the same call without it; a call answered from the cache gives
+  none of the warnings of the call that stored its result, as before.
+
+### White's degrees of freedom
+
+**White's test takes its degrees of freedom from the rank of its auxiliary
+regression with the intercept, and its p-value changes where the auxiliary
+columns span the constant.** The auxiliary regression of the squared
+residuals on the regressors, their squares and their cross-products, Z, has
+an intercept, so the degrees of freedom of n R² are the rank of [1, Z]
+minus one, as `lmtest::bptest()` counts them given the same terms as
+`varformula`. `performWhiteTest()` took the rank of Z alone, one more when
+the columns of Z span the constant, as the squares of the dummies of
+`contr.sum`, `contr.helmert` and `contr.poly` contrasts, the last the default
+for an ordered factor, the dummies of every level of a factor in a model
+without an intercept, an interaction with no observation in the cell of its
+baseline levels, and the squares of an orthogonal `poly()` basis do. The
+statistic is the same, and the p-value was too large. It now drops the
+columns of Z that are combinations of the intercept and the columns before
+them, at the default tolerance of `qr()`, so that the regression and its
+degrees of freedom agree. On the data of `contract_data()`
+(`tests/testthat/helper-test-recipes.R`), with `half` a factor of two levels,
+`h` one of three, `sub` one of two within each level of `group`, and `o4` and
+`o3` the levels of `group` and of `h` as ordered factors:
+
+| Model | Statistic | Degrees of freedom (p), 0.15.0 | Now, as `lmtest::bptest()` |
+| --- | --- | --- | --- |
+| `lm(y ~ x1 + group)`, `contr.sum` | 17.83 | 9 (p = 0.0372) | 8 (p = 0.0225) |
+| `lm(y ~ x1 + group)`, `contr.helmert` | 17.83 | 9 (p = 0.0372) | 8 (p = 0.0225) |
+| `lm(y ~ 0 + group + x1)` | 17.83 | 9 (p = 0.0372) | 8 (p = 0.0225) |
+| `lm(y ~ x1 + o4)`, `contr.poly` | 17.83 | 9 (p = 0.0372) | 8 (p = 0.0225) |
+| `lm(y ~ x1 + group)`, treatment contrasts | 17.83 | 8 (p = 0.0225) | unchanged |
+| `lm(y ~ x1 + group)`, `contr.sum`, `cross_products = FALSE` | 13.79 | 6 (p = 0.0321) | 5 (p = 0.0170) |
+| `lm(y ~ x1 + group, weights = 1 / x1)`, `contr.sum` | 16.28 | 9 (p = 0.0612) | 8 (p = 0.0385) |
+| `lm(y ~ x1 + half)`, `contr.sum` | 6.191 | 5 (p = 0.288) | 4 (p = 0.185) |
+| `lm(y ~ x1 + group / sub)`, `contr.helmert` for both | 19.41 | 17 (p = 0.306) | 16 (p = 0.248) |
+| `lm(y ~ x1 + half * h)`, no observation at (even, p) | 17.68 | 11 (p = 0.0893) | 10 (p = 0.0606) |
+| `lm(y ~ poly(x1, 2) + x2)` | 11.95 | 9 (p = 0.216) | 8 (p = 0.153) |
+| `lm(y ~ o3)`, `contr.poly` | 1.696 | 3 (p = 0.638) | 2 (p = 0.428) |
+| `lm(y ~ x1 + x2)` | 11.14 | 5 (p = 0.0486) | unchanged |
+
+The first five rows are one model: the four levels of `group`, coded in four
+ways or without the intercept, span the same columns, and under the default
+treatment contrasts the test gave the 8 degrees of freedom it now gives in
+all five. The correction reaches `cross_products = FALSE` and more regressors
+than `max_interactions`, `performWhiteTestRobust()`, whose asymptotic
+interval, effect size and power follow the degrees of freedom, the registered
+`"white"` and its fallback without cross products, `runHeteroTests()` and the
+functions that share its default battery, and `test_factory`.
+`performWhiteTestBootstrap()` does not change on such a design: its p-value
+counts the replicates whose statistic reaches the observed one, and there no
+statistic changes. Nor does `performWhiteTestStreaming()`: it stops on such
+a design, whose auxiliary columns are collinear with its intercept, as on any
+design with collinear auxiliary terms, and where it gives a value its
+degrees of freedom were and are those of the exact test.
+
+**On a nearly collinear auxiliary design the statistic changes too.** The
+columns kept are now those `lm(e^2 ~ Z)` keeps. On the
+`mgcv::gam(y ~ s(x1) + x2)` fit of the matrix of the model context
+(`tests/testthat/helper-model-context.R`), whose 65 auxiliary columns have
+rank 60 at the tolerance of `qr()`, the auxiliary regression of 0.15.0
+silently lost a column: of the 60 columns its decomposition without the
+intercept kept, `lm()` aliased one given the intercept, so the regression
+had 59 regressors and was scored on 60 degrees of freedom. The test gave
+45.92 on 60 degrees of freedom (p = 0.910); it now gives 46.05 on 60
+(p = 0.908), 0.28% more, the value of `lm(e^2 ~ Z)` and of
+`lmtest::bptest()` with the same terms. No computation keeps the statistic
+of 0.15.0 and gives the value of those references: its columns without the
+lost one give 45.92 on 59, which is neither.
+
+**White's test no longer depends on where its regressors are located.** The
+rank of [1, Z] was decided on the columns as they are: the square of a
+regressor far from zero, such as `x = 1e4 + u` or a date written as
+`YYYYMMDD`, differs from a combination of the intercept and the regressor by
+less than the tolerance of `qr()` relative to its size, and was dropped. On
+`lm(y ~ x1 + x2)` with 1e4 added to `x1`, on the data of `contract_data()`,
+the test gave 10.34 on 4 degrees of freedom (p = 0.035), where the same model
+at zero gives 11.14 on 5 (p = 0.0486); on a date, `lm(y ~ ymd + z)` with
+`ymd` from 20240101 to 20240128, 42.049245 on 4 (p = 1.6e-08) for 42.049252
+on 5 (p = 5.8e-08), the value of the days counted from zero. The rank is now
+decided on the auxiliary design of the centred regressors, which spans the
+same columns with the intercept. The regression is fitted on Z as before,
+which keeps every other value bit for bit, and on the centred design only
+when the fit of Z would lose one of the columns kept. The test gives the
+value of `lm(e^2 ~ Z_c)` and of `lmtest::bptest()` on the centred terms, and
+moving `x1` by 1e2, 1e4 or 1e6 changes its statistic by at most 1.3e-10
+relative and its degrees of freedom not at all. The robust form, the
+registered `"white"`, the runner and the White bootstrap change with it.
+This holds for regressors that enter the model linearly, which are centred
+one by one. A product or a power of a variable located far from zero inside
+the model stays ill-conditioned once its columns are centred, and can still
+lose a column; how far is far depends on the spread of the variable. On 200
+observations of two standard normal regressors,
+`lm(y ~ I(x1 + 2e3) * I(x2 + 2e2))`, with `x1` about 2,000 standard
+deviations from zero, keeps every coefficient, and White's test gives 46.83
+on 7 degrees of freedom where `lm(y ~ x1 * x2)`, the same model, gives 51.90
+on 8; `lm(y ~ I(x1 + 2e3) + I((x1 + 2e3)^2))` gives 8.05 on 3 for 11.29 on
+4. The degrees of freedom held, and the statistic moved by at most 3e-5
+relative, while the shift was at most 700 standard deviations of the
+regressor, and the column was lost from 800 to 2,000 on (recorded in the
+roadmap). Further out, `lm()` itself aliases the interaction or the square,
+before White's test sees it: with `I(x1 + 1e4) * I(x2 + 1e3)` the fit is
+additive, and the test gives 35.02 on 5, the value of `lm(y ~ x1 + x2)`. A
+year from 1990 to 2020, about 220 standard deviations from zero, and its
+square, `year * z` and `income * age` give the value of the centred model to
+seven digits or more.
+
+**White's test refuses an auxiliary regression that fits the squared
+residuals exactly, where it returned the number of observations whatever the
+data.** Such a regression has an R² of 1, and n R² is n. It fits them
+exactly with as many independent terms as observations, and with fewer when
+the squared residuals are a combination of its terms, as on a paired design:
+on `lm(y ~ treat + subject)` with two observations of each of 30 subjects,
+the two residuals of a subject sum to zero, so their squares are equal and a
+combination of the subject dummies, and every route to White's test returned
+60 on 30 degrees of freedom (p = 0.0009); the runner rejected at the 5% level
+in 200 of 200 homoscedastic draws. On 22 observations of six regressors,
+whose squares and products make 28 terms with the intercept,
+`performWhiteTest()` returned 22 on 21 degrees of freedom (on 22 in 0.15.0;
+p = 0.40). The test now stops when the residual sum of squares of its
+auxiliary regression is at most `sqrt(.Machine$double.eps)`, 1.5e-8, of the
+total: an exact fit leaves rounding error, about 1e-30 of the total on the
+paired design, and squared residuals that depart from the fit by 2e-4 of
+their size leave 2e-7, and are tested. It stops with "White's auxiliary
+regression fits the squared residuals exactly: ...", and the advice depends
+on the call: `cross_products = FALSE` when the products were in and the
+regressors alone do not fit the squared residuals exactly, Koenker's test
+(`performKoenkerTest()`) when they do not, and more data when the regression
+has as many terms as observations ("There are too few observations for
+White's test with these regressors; use ..."). With fewer terms the design
+forces the exact fit, and more data of the same design do not help: 500
+subjects of two observations are refused as 30 are, with "The design forces
+the exact fit, as a factor with two observations per level does, however
+many levels it has; use more observations per level." So
+do its robust form, the registered `"white"`, the White bootstrap and
+`performWhiteTestStreaming()`, which stopped on the saturated design with
+"Auxiliary regression became rank deficient". `runHeteroTests()` falls back
+on White's test without cross products, as on any refusal of White's test,
+and returns it under the name `white`, tagged as a fallback: 15.98 on 12
+degrees of freedom (p = 0.19) for the six regressors. Where the regressors
+alone fit the squared residuals exactly, as on the paired design, the
+Breusch-Pagan and Koenker tests it would fall back on next fit them exactly
+too, and would report the number of observations under the name `white`: it
+takes no fallback and stops with the refusal, and so does `runDiagnostics()`.
+A factor of 10 levels with two observations each beside `x1`, 20
+observations, shows why the refusal of a saturated regression alone was not
+enough: with the products it has as many terms as observations, and the
+runner fell back on White's test without them, which fits the squared
+residuals exactly too, and returned 20 on 11 (p = 0.045), where it returned
+20 on 19 (p = 0.39; on 20 in 0.15.0) before; it now stops. Koenker's and the Breusch-Pagan
+tests return 60 on 30 and 63.25 on 30 on the paired design, a meaningless
+value, as before; refusing it there is left to a change of their own
+(recorded in the roadmap).
+
+The streaming test counts the terms of its auxiliary regression by their
+rank and fits them centred, from its cross-products, as `performWhiteTest()`
+counts and fits them, so it refuses the same designs with the same message
+and advice, and `runHeteroTests()` falls back, or stops, as it does without
+streaming. On 30 pairs the squares of the subject dummies equal the dummies:
+it refuses 31 independent terms for 60 observations as an exact fit the
+design forces, where 0.15.0 stopped on the collinear terms. With one subject
+observed a third time there is no exact fit, and it still stops on the
+collinear terms, which `performWhiteTest()` drops and it does not; the
+runner, when it streams, falls back there on White's test without cross
+products, as in 0.15.0.
+
+The refusal covers the exact fit only: one step away from the paired
+design, White's test still rejects almost always. White's, Koenker's and the
+Breusch-Pagan tests are not valid with fixed effects for small groups, a
+factor with few observations per level, and over-reject, the more the
+smaller the groups and the more groups there are, as they did before this
+change. In 2,000 homoscedastic draws of `lm(y ~ x + subject)`, with normal
+`x` and errors, White's test rejected at the 5% level in 99% of them with 30
+subjects of two observations and one of them observed a third time, in all
+but one with 30 pairs whose weights vary within pairs, in 48%, 22%, 16% and
+12% with 30 subjects of three, four, five and eight observations, and in 22%
+with 100 subjects of eight; Koenker's test in 99%, 100%, 54%, 22%, 16%, 12%
+and 22%, and the Breusch-Pagan test in 64%, 67%, 38%, 26%, 21%, 15% and 24%.
+The help pages of the three tests say so, and `?performWhiteTest` cites Juhl
+and Sosa-Escudero (2014), who derive tests for fixed effects models. The
+three tests also warn on such a fit (*Fixed effects for small groups*,
+above).
+
+A regressor named like a column White's test generates, such as `a` beside
+`a_sq`, stopped the test with "Auxiliary regression failed: duplicated name
+'a_sq' in data frame using '.'". The auxiliary regression is now fitted with
+`lm.fit()` on its matrix, and the test gives the value of the same data with
+other names: 27.64 on 5 degrees of freedom for the design of
+`tests/testthat/test-performWhiteTest.R`. On every other design the fit
+gives the value of before, bit for bit.
+
+`tests/testthat/test-performWhiteTest.R` compares White's test on seventeen
+designs, with and without cross products, with `lm(e^2 ~ Z)` written out on
+the centred columns and with `lmtest::bptest()`, and pins the values above. Unchanged: every other
+value, as on continuous regressors and factors with treatment contrasts,
+where the auxiliary regression of 0.15.0 had the degrees of freedom it
+counted. A corpus of 19,523 calls, that of the model context
+(`scripts/model-context-identity.R`), returns what it returned before,
+`identical()`, but for 44 calls of White's test, its robust form and the
+runner on the fits with a `poly()` term and the `gam` with a smooth term,
+which the harness allows as N2 and verifies, each, against White's test
+written out on the cell to `1e-10`, with the statistic `identical()` to
+before on the `poly()` fits; a corpus of 504 calls of every route to White's
+test on 28 designs, `identical()` but for 204 calls on designs that span the
+constant, each with the statistic `identical()` and the degrees of freedom
+and p-value of `lm(e^2 ~ Z)` and of `lmtest::bptest()`. The studies of
+`inst/validation/` fit continuous regressors, whose auxiliary columns do not
+span the constant, and their rows of White's tests do not move: every value
+of White's statistic, degrees of freedom and p-value they compute is
+`identical()` to before, replication by replication, 280,593 in all. Pass A
+at its 5000 replications, and White's row of the full sweep and its nine
+rows of blocks 1 to 3 of the weighted fits, run alone from their seeds at
+the replications of the committed tables, reproduce those tables row for
+row; the White bootstrap's scenarios of block 4 of the weighted fits, of the
+offset refits and on a transformed response, and the survey designs, give
+the same tables as before at fewer replications from the same seeds.
+
+The changes after the review of N2 (the location, the exact fits, the names)
+were checked the same way. The corpus of the model context runs eight more
+cells: its model with `x1` moved by 1e4 and by 1e6, the six regressors on 22
+observations above, the paired design, the factor of 10 levels beside `x1`,
+the regressors `a` and `a_sq` with a copy that names the second `b`, and an
+ordered factor. Of its 19,979 calls, 19,946 return what they returned
+before, `identical()`, and the other 33 are calls of White's test on those
+cells and of `runDiagnostics()` on the two whose regressors fit the squared
+residuals exactly, each verified: against White's test written out on the
+centred design, every other number of the result that of before or computed
+from the new degrees of freedom; by the refusal, which the harness requires
+of every route to White's test on the three exact fits, and of the runner
+and `runDiagnostics()` where the regressors fit them exactly; or as the same
+call on the model at zero or with the other names. The harness now also compares the
+robust test's interval, effect size and power, and every attribute of the
+result, with what they compute to from the degrees of freedom.
+The studies of `inst/validation/` fit regressors near zero, and their rows
+of White's tests do not move: White's row of the full sweep and its nine
+rows of blocks 1 to 3 of the weighted fits, run alone from their seeds at
+the replications of the committed tables, reproduce those tables row for
+row; Pass A at 500 replications, the survey designs at 100, the White
+bootstrap on a transformed response at 60 and 20, the White bootstrap of the
+offset refits at 60 and the White bootstrap's scenarios of block 4 of the
+weighted fits at 40 (8 for the weights that are too weak), from the same
+seeds, give the same tables as before; and each of the 131,433 values of
+White's statistic, degrees of freedom and p-value these runs compute is
+`identical()` to before.
+
+### Printing and summarising the results of `runHeteroTests()`
+
+`runHeteroTests()` returns a `hetero_test_suite`, which had no print or
+summary method: `print()` showed the list, each test as an `htest` and then
+the attributes of the suite, the whole fitted model with its call and
+coefficients among them, and `summary()` gave the `Length Class Mode` table
+of a list. `print()` now shows the call of the model, or its formula, and the
+number of observations on one line, wrapped when it is wider than the
+console, then a table with one row per test, its statistic, degrees of freedom
+and p-value, with the significance codes of `summary.lm()`, and a note, cut to
+one line, for each test that did not run as asked. `summary()` returns a
+`summary.hetero_test_suite`, laid out as the summary of an `lm`: the call, the
+number of observations, the weights, offset and family where there are any,
+the table, printed by `printCoefmat()` so that `digits` and
+`options(show.signif.stars)` apply, the legend of the codes, the notes in full
+(a fallback, naming the test that ran in its place and why; a refusal or a
+failure, with its message; a streaming implementation; a parameter that is
+not a degree of freedom, such as the `B` of a resampling test), and a line
+saying that several tests of one model are not independent evidence.
+`coef(summary(s))` returns the table as a numeric matrix, as
+`coef(summary(fit))` does for an `lm`, and `?summary.hetero_test_suite`
+documents every field. A grouped run, a `hetero_grouped_suite`, has the same
+methods, with one table for all the groups, in which a failed test shows `NA`
+and the notes say why. On `lm(stations ~ mag + depth, data = quakes)`, before:
+
+```r
+runHeteroTests(model, quakes)
+#> $white
+#>
+#>  White's test for heteroscedasticity
+#>
+#> data:  model
+#> X-squared = 125.56, df = 5, p-value < 2.2e-16
+#> alternative hypothesis: heteroscedasticity present
+#>
+#>
+#> $koenker
+#> ...
+#> attr(,"model")
+#>
+#> Call:
+#> lm(formula = stations ~ mag + depth, data = quakes)
+#>
+#> Coefficients:
+#> (Intercept)          mag        depth
+#>  -192.04290     47.90872      0.01318
+#>
+#> attr(,"data_source")
+#> [1] "data.frame"
+```
+
+and now:
+
+```r
+runHeteroTests(model, quakes)
+#> Heteroscedasticity tests of lm(formula = stations ~ mag + depth, data =
+#>     quakes), n = 1000
+#>
+#>         Statistic df p-value
+#> white       125.6  5  <2e-16 ***
+#> koenker     111.3  2  <2e-16 ***
+#> ---
+#> Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+```
+
+These eight methods (`print()` and `summary()` of each class, and `print()`
+and `coef()` of the two summaries) are exported S3 methods, an addition to
+0.16.0 outside its "no API change", approved by the author on 2026-10-21. No
+value changes: `tidy()`, `glance()`, `augment()` and `autoplot()` of a suite
+return what they returned, and a single test still returns and prints its
+`htest`. A suite whose model `runHeteroTests()` fitted itself carries a new
+attribute, `attr(, "model_origin")`: `"formula"` when it was given a
+formula, `"group"` for each group of a grouped run, and `"survey"` for the
+data of a survey design (`runSurveyHeteroTests()`). The call of such a model
+names the runner's own variables (`stats::lm(formula = model, data =
+prep$data)`), so `summary()` shows its formula instead; a model you fitted is
+shown by its call, and its suite has no such attribute.
+
+Through `runHeteroTests()` a result whose `data.name` is `"model"` now reports
+the formula of the model instead, as Koenker's test and the others already
+did. Five tests of the package reported `"model"` there, the name of the
+argument of the function the registry calls them with: White's test
+(`"white"`), its bootstrap (`"white_bootstrap"`), its form without cross
+products (the first fallback of `"white"`), the studentized Breusch-Pagan
+statistic (`"student_bp"`) and Szroeter's test (`"szroeter"`); so
+`runHeteroTests(m, d)$white` printed `data:  model` where `$koenker` printed
+`data:  mpg ~ wt + qsec`. Those results change, and so does that of a
+diagnostic added with `registerDiagnostic()` whose `data.name` is `"model"`,
+such as one that calls `performWhiteTest(model, data)` on its argument. No
+other `data.name` changes: a diagnostic of yours keeps what it says it
+tested, such as the two halves of the residuals a `var.test()` compares, and
+the NCV and variance-form tests keep the formula followed by what else they
+were run against. This changes a field of what `runHeteroTests()`, and so
+`runDiagnostics()` and `runSurveyHeteroTests()`, return; no statistic, degree
+of freedom or p-value changes. Called directly, a test still names the object
+it is given (`performWhiteTest(m, d)$data.name` is `"m"`), and
+`cachedTest()`, the registry and `runHeteroTestsParallel()` return what the
+registered function returns, `"model"` among them, as before. The corpus of
+the model context (`scripts/model-context-identity.R`), whose runner records
+now hold the `data.name` (they hold the tests of a suite, not its
+attributes), returns what it returned before: of its 19,523
+calls 18,885 are `identical()`, and the other 638, all runner calls, differ
+in the `data.name` of a test alone, each from `"model"` to the formula of its
+model, which the harness allows and checks against `deparse(formula(model))`;
+so do 81 of the 132 runner records on the stored design and of its
+verification, and none in any other way.
+
+### Packaging
+
+- The logo shows in the README, and the `R CMD check` NOTE
+  "Non-standard file/directory found at top level: 'assets'" is gone. The
+  logo is in `man/figures/logo.png`, where R tooling looks for it, and
+  `assets/` is left out of the built package.
+- CI runs the suite once per job, and the full model-context matrix and the
+  two longest cache tests in one job only; `HETEROTESTS_FULL_MATRIX=false`
+  skips them locally too (see the development guide). No function changes.
+
+### Documentation
+
+- The documentation site, <https://diogoribeiro7.github.io/heteroTests/>,
+  moves from pkgdown to Material for MkDocs and shows the package logo. Its API
+  reference is generated from the help pages by `tools/build-docs.R`, in the
+  sections the pkgdown index had, and `tests/testthat/test-reference-index.R`
+  checks that every export is in one; the vignettes become its user guide. No
+  function changes.
+- The pkgdown site's addresses, such as `reference/performWhiteTest.html`,
+  `articles/tutorial.html` and `news/index.html`, redirect to the pages that
+  replaced them; the guides no longer print the `[INFO]` line of every test
+  they run; and the titles of `?performBPTestStreaming` and
+  `?performKoenkerTestStreaming` lose a stray backslash before "Pagan".
+- `?performWildBootstrapTest` has a section *Size*: the rates at the 5% level
+  of the Rademacher and Mammen multipliers with Gaussian, `t5` and centred
+  exponential errors at 30, 50, 100 and 200 observations
+  (`inst/validation/wild-multiplier-size.R` and
+  `inst/validation/wild-no-multiplier-size.R`). With skewed errors either
+  multiplier needs about 200 observations to hold the level, where a plain
+  residual bootstrap, without a multiplier, held it from 50 at a cost of about
+  1.4 points of power at 30; it is to be offered as `distribution = "none"`
+  in 1.0.0. No value changes.
+
+## 0.15.0
+
+0.15.0 makes the interface match its description before 1.0.0. Every test
+takes `(model, data, ...)`, with `data = NULL` in second position and
+`performBoxMTest(data, group)` the documented exception;
+`performBPTestRobust()` chooses the studentized statistic with `studentize`,
+as `performHarveyTest()` and `lmtest::bptest()` do;
+`rrunAdvancedDiagnostics()` is renamed `runAdvancedDiagnostics()`; and
+`?test_results` documents what every test returns and the inputs every test
+refuses. Most of these changes break calls, not values: an old call form that
+0.15.0 replaces still works in 0.15.x, warns with the call to use instead
+and, apart from the changes in bold, returns what it returned in 0.14.0, and
+it stops working in 1.0.0 (the table under *Calls that changed* gives each).
+The changes in bold change what calls return: every resampling function
+draws 999 replicates by default; the default battery of `runHeteroTests()` is
+White and Koenker; `performGlejserTest()` corrects for asymmetric errors by
+default; the tests refuse a `glm` that is not a least-squares fit, which most
+of them returned a value for, and so do the registry names `"ncv"` and
+`"student_bp"`, deprecated in 0.14.0; they refuse a model with an `NA`
+coefficient and data that lack rows or variables of the fit, which some of
+them returned a value for, and `performRESETTest()` refuses a
+`survey::svyglm()` fit, as the other tests did already; the Goldfeld-Quandt,
+RESET, White bootstrap and wild bootstrap tests read the prior weights of a
+Gaussian `glm`, and the quantile regression test refuses a weighted one; the
+tests that read `data` refuse data whose rows they cannot match to the
+observations of the fit, and `runHeteroTests()` and `runDiagnostics()` stop
+on such data rather than fall back on another test; the robust White and
+Breusch-Pagan tests and the White bootstrap give the value on the data of the
+fit for rows they had renumbered; seeded resampling with `parallel = TRUE` is
+reproducible, and `runHeteroTestsParallel()` gives the same value with one
+worker as with several; the bootstrap tests estimate the weights of a
+`fitWLS()` fit again in each replicate; and the studentized Breusch-Pagan
+statistic reads the weights of a `fitWLS()` fit.
+
+### Resampling tests draw 999 replicates by default
+
+**Every resampling function draws 999 replicates by default, so its default
+p-value changes.** A resampling p-value is `(1 + #) / (B + 1)`, the number of
+replicates at least as large as the observed statistic, plus one, over the
+number of replicates plus one. A test at level `alpha` that rejects when it is
+at most `alpha` is exact only when `alpha * (B + 1)` is an integer: 999 is at
+the 5% and 1% levels, and 1000 is at neither. The defaults were a mix:
+
+| Function | Default before | Default now |
+| --- | --- | --- |
+| `performWildBootstrapTest()` | `B = 499` | `B = 999` |
+| `performWhiteTestBootstrap()` | `B = 1000` | `B = 999` |
+| `bootstrapTestStatistic()` and `rbootstrap_test_statistic()` | `B = 1000` | `B = 999` |
+| `performWhiteTestRobust()` and `performBPTestRobust()`, with `bootstrap = TRUE` | `B = 1000` | `B = 999` |
+| `runAdvancedDiagnostics()` and `rrunAdvancedDiagnostics()` | `bootstrap_B = 500` | `bootstrap_B = 999` |
+| `performSpatialHeteroTest()` | `permutations = 499` | `permutations = 999` |
+| `performRankPermutationTest()` | `B = 999` | unchanged |
+
+With `set.seed(1)` before each call, the default p-value was and is:
+
+| Call | Before | Now |
+| --- | ---: | ---: |
+| `performWildBootstrapTest(lm(mpg ~ wt + qsec, data = mtcars))` | 0.2400 | 0.2330 |
+| `performWhiteTestBootstrap(lm(dist ~ speed, data = cars))` | 0.1668 | 0.1670 |
+| `bootstrapTestStatistic(performKoenkerTest, lm(dist ~ speed, data = cars), cars)$p_value` | 0.0799 | 0.0800 |
+| `performWhiteTestRobust(lm(dist ~ speed, data = cars), bootstrap = TRUE)$p.value_bootstrap` | 0.1688 | 0.1690 |
+| `performBPTestRobust(lm(dist ~ speed, data = cars), bootstrap = TRUE)$p.value_bootstrap` | 0.0799 | 0.0800 |
+| `runAdvancedDiagnostics(lm(mpg ~ wt + qsec, data = mtcars), mtcars)`, White | 0.0259 | 0.0290 |
+| `runAdvancedDiagnostics(lm(mpg ~ wt + qsec, data = mtcars), mtcars)`, Breusch-Pagan | 0.2335 | 0.2420 |
+| `performSpatialHeteroTest(lm(mpg ~ wt + hp, data = mtcars), listw = lw)` | 0.5100 | 0.5080 |
+
+where `lw` joins each car to its four nearest neighbours in coordinates drawn
+by `set.seed(7); cbind(runif(32), runif(32))`. `runAdvancedDiagnostics()`
+bootstraps both tests because `mtcars` has fewer than 50 rows. The registered
+tests `"wild_bootstrap"`, `"white_bootstrap"` and `"spatial_hetero"`, and so
+`runHeteroTests()` and the functions built on it, change with them. The `B`
+in the `parameter` of the two bootstrap tests, `robust_details$bootstrap$B` of
+the robust tests, which is recorded even when `bootstrap = FALSE`, and
+`metadata$bootstrap_B` of `runAdvancedDiagnostics()` report the new default.
+Pass the old value to reproduce a result of 0.14.0.
+
+Of the recorded evidence, only the full sweep calls a resampling test with
+its default, `performSpatialHeteroTest()`. Its row was regenerated from the
+same seeds: under the null it rejected 0.045 of the time and rejects 0.050,
+and against the alternative 0.362 and 0.350
+(`inst/validation/full-sweep-size-power.csv`). The other studies give `B`
+explicitly.
+
+### White and Koenker are the default battery
+
+**`runHeteroTests()` and the functions that share its default run White's
+test and Koenker's studentized Breusch-Pagan test, `c("white", "koenker")`,
+where they ran White's and the classical Breusch-Pagan test,
+`c("white", "breusch_pagan")`.** The classical statistic divides by
+`2 sigma^4`, the variance of the squared errors only when they are normal. In
+the full sweep, with 150 observations and 400 replications, it rejects a true
+null hypothesis 28.75% of the time at the 5% level when the errors have a
+`t5` distribution (115 of 400 samples), against 4.75% (19 of 400) for
+Koenker's statistic; under Gaussian errors they reject 5.75% and 4.50%, and
+both reject every sample against `sd = x^2`
+(`inst/validation/full-sweep-size-power.csv`). Pass A, at 5000 replications
+and 100 observations, agrees: 21.86% against 4.24% under `t5` errors. What
+Koenker's statistic gives up is a little power when the errors are normal: in
+Pass A it rejects 72.70% of the time against `sigma^2 = exp(0.4 x1)`, where
+the classical test rejects 77.44% (`inst/validation/pass-a-size-power.csv`).
+
+The default changes in `runHeteroTests()`, `runDiagnostics()`, `summary()`
+and the deprecated `test()` on a `HeteroDiagnostic` object,
+`compareModelDiagnostics()`, `compareTestResults()`,
+`runSurveyHeteroTests()` and the tests the dashboard selects at start, and so
+in `generateDiagnosticReport()` and `generateHeteroRecommendations()`, which
+call `runHeteroTests()` with its default. The classical test still runs by
+name, `tests = "breusch_pagan"`, or `c("white", "breusch_pagan")` for the old
+battery. The second element of a default suite is now called `koenker`, so
+code that reads `$breusch_pagan` from it gets `NULL`. For
+`lm(mpg ~ wt + qsec, data = mtcars)`, `runHeteroTests(m, mtcars)` returned
+White's test (11.82 on 5 degrees of freedom, p = 0.0373) and the classical
+Breusch-Pagan test (3.135 on 2, p = 0.2086), and returns White's test and
+Koenker's (3.086 on 2, p = 0.2138).
+
+Two other functions follow the new default. `suggestRemediation()` suggests
+variance modelling when the Koenker test rejects as well as when the classical
+test does; it read only `"breusch_pagan"`, so it would never have suggested it
+for a default suite. `suggestDiagnosticsForProfile()` recommends Koenker's
+test, where it recommended the classical one, beside White's as the baseline
+for every data profile. `runAdvancedDiagnostics()` is unchanged: with its
+default `auto_enhance = TRUE` its Breusch-Pagan entry is already the
+studentized statistic, but `auto_enhance = FALSE` turns the studentization
+off with the bootstrap and runs the classical test, which is listed under
+0.16.0. None of the recorded evidence calls these functions
+with their default battery, so no recorded number moves.
+
+### The Glejser test corrects for asymmetric errors by default
+
+**`performGlejserTest()` computes the statistic of Im (2000) and of Machado
+and Santos Silva (2000) by default, `robust = TRUE`, where it computed
+Glejser's (1969), so the statistic and p-value it reports by default
+change.** Glejser's statistic regresses the absolute residuals on the
+variable tested, and has its nominal level only when positive and negative
+errors are equally likely. In `inst/validation/glejser-skewed-errors.csv`, at
+5000 replications, it rejects a true null hypothesis 8.8% to 17.7% of the
+time at the 5% level when the errors are skewed, at every sample size from 50
+to 1000. The corrected statistic, added in 0.13.0, subtracts the mean sign of
+the residuals times each residual from its absolute value. Under the same
+skewed errors it rejects 4.6% to 5.7% of the time from 150 observations on,
+and all 27 of its null cells from 150 observations, with symmetric errors
+too, are inside the release-gate interval, [0.0421, 0.0579]. At 50
+observations it is not: under skewed errors it rejects 5.7% to 6.6% of the
+time, and four of those six cells are above the interval, at 0.0580, 0.0592,
+0.0626 and 0.0658, where Koenker's statistic on the same regressor is at
+0.0586 to 0.0714. Under symmetric errors the two statistics differ little:
+the corrected one rejects 0.5 to 0.7 percentage points less often at 50
+observations, and against `sigma^2 = exp(gamma x1)` with Gaussian errors it
+has 1.1 and 1.9 points less power at 50 observations, and 0.8 and 0.1 at 150.
+
+The `method` of the result says which statistic was computed, and by default
+now reads "Glejser test for heteroscedasticity (robust to asymmetric
+errors)". Pass `robust = FALSE` for Glejser's statistic: it returns what the
+default returned in 0.14.0, checked with `identical()` against 0.14.0. The
+default was and is:
+
+| Call | 0.14.0 | Now |
+| --- | ---: | ---: |
+| `performGlejserTest(lm(mpg ~ wt + qsec, data = mtcars), mtcars, "wt")` | t = -0.450 (p = 0.656) | t = -0.395 (p = 0.695) |
+| `performGlejserTest(lm(dist ~ speed, data = cars), cars, "speed")` | t = 2.059 (p = 0.045) | t = 1.943 (p = 0.058) |
+
+`performGlejserTest()` is not a registered test, so `runHeteroTests()`, the
+dashboard and the recommendations do not call it, and no other function of
+the package changes with it. Of the recorded evidence, the full sweep and
+the known-weights block of the weighted fits call it with its default. Their
+two rows were regenerated from the same seeds, and with `robust = FALSE` the
+same runs reproduce the rows of 0.14.0 byte for byte: in the full sweep the
+size moves from 0.0600 to 0.0575, the size under `t5` errors from 0.0575 to
+0.0550, and the power stays 1.000 (`inst/validation/full-sweep-size-power.csv`);
+with known weights the rejection rate moves from 0.0475 to 0.0450
+(`inst/validation/weighted-fits-size.csv`). Pass A and the Glejser study name
+Glejser's statistic, and now give `robust = FALSE`; their numbers do not
+change.
+
+### Inputs every test refuses
+
+**Calls that returned a value for a `glm` that is not a least-squares fit,
+for a model with an `NA` coefficient, or for data that cannot be matched to
+the fit now stop with an error.** `tests/testthat/test-input-validation.R`
+gives every test these inputs, and each is refused with one message
+(`?test_results`). Before 0.15.0 these calls returned a value:
+
+| Input | Tests that returned a value and now stop | Message |
+| --- | --- | --- |
+| A `glm` of a family other than `gaussian`, or with a link other than the identity, such as `glm(am ~ wt, family = binomial)` | `performWhiteTest()`, `performWhiteTestRobust()`, `performWhiteTestBootstrap()`, `performBPTest()` and `performBreuschPaganTest()`, `performBPTestStreaming()`, `performBPTestRobust()`, `performKoenkerTest()`, `performKoenkerTestStreaming()`, `performStudentizedBPTest()`, `performGQTest()`, `performParkTest()`, `performSzroeterTest()`, `performWildBootstrapTest()`, `performQuantileRegressionTest()`, `performRankPermutationTest()`, `performHighDimensionalTest()`, `performSpatialHeteroTest()`, `performSpearmanTest()`, `performLeveneTest()`, `performGlejserTest()`, `performBrownForsytheTest()`, `performFlignerKilleenTest()`, `performBartlettTest()`, `performHarveyTest()`, `performArchLMTest()`, `performMcLeodLiTest()`, `performHartleyFmaxTest()`, `performOBrienTest()`, `performCookWeisbergTest()`, `performNCVTest()`, `performSpreadLevelTest()`, `performPesaranTest()`, `performBPRandomEffectsTest()`, `performDavidianCarrollTest()`, `performRESETTest()`: 36 names, all but the three tests that already refused every `glm` | "`<test>()` needs a model fitted by stats::lm(): a glm with the binomial family and the logit link is not a least-squares fit." |
+| A model with an `NA` coefficient, such as `lm(mpg ~ wt + I(2 * wt), data = mtcars)` | `performSpreadLevelTest()`, `performDavidianCarrollTest()`, `performPesaranTest()`, `performBPRandomEffectsTest()`, `performRESETTest()` | "Model coefficients must be finite before running ..." |
+| `data` that lack rows the model was fitted to | `performVarianceFormTest()` | "... requires `data` to contain the rows used to fit the model. Missing rows: ..." |
+| `data` that lack a variable of the model | `performVarianceFormTest()`, `performPesaranTest()`, `performBPRandomEffectsTest()` | "The following variables are missing from input data: ..." |
+| A `survey::svyglm()` fit, of any family | `performRESETTest()`, the only test that did not refuse one | "The model is a `survey::svyglm()` fit, whose residuals are scaled by the sampling weights. ..." |
+
+The values these calls returned tested nothing the help pages describe. A
+binomial or Poisson fit has residuals whose variance depends on the mean by
+construction: `performKoenkerTest(glm(am ~ wt + hp, data = mtcars, family =
+binomial), mtcars)` returned 0.963 (p = 0.618), and `performRESETTest()` on
+the same fit F = 86.1 (p < 0.0001). The residuals of a `survey::svyglm()`
+fit are scaled by the sampling weights, which are not precision weights, and
+every other test refused one already. A model with an
+aliased term was computed by the five tests as if the term were not there,
+and refused by the others. The variance-form test returned a value for data
+that lack rows of the fit or a variable of the model, and the Pesaran and
+random-effects tests for data that lack a variable, which they did not look
+for. `performPesaranTest()` on data that lack rows stopped with "number of
+items to replace is not a multiple of replacement length" in the designs
+tried, and now names the rows, as the others do. In
+`test-input-validation.R`, on the design it uses, all 36 names returned a
+value for a binomial and for a Poisson `glm` before 0.15.0.
+
+A `glm` with the Gaussian family and the identity link is a least-squares fit
+and is still accepted. Without prior weights, and with positive ones, every
+test that accepts it gives the result of the `lm` in that design to `1e-8`,
+the five tests below since they read its weights. The exception is the
+Fligner-Killeen statistic, which moves by about `1e-6` of its value: with an
+even number of residuals the two in the middle tie at exactly half their
+difference from the median, and rounding, which differs between the two fits
+by about `1e-15`, decides which ranks first. A Gaussian `glm` with a zero
+prior weight is not yet refused as the same `lm` is: the tests that read the
+Pearson residuals, such as the Koenker, White, Glejser, Spearman, GQ and wild
+bootstrap tests, return a value for it, and `performWhiteTestBootstrap()`
+stops with "Model residuals must be finite". It is recorded under 0.16.0.
+`performWhiteTestStreaming()`, `performHarrisonMcCabeTest()` and
+`performVarianceFormTest()` refuse every `glm`, as before.
+
+**The registry names deprecated in 0.14.0, `"ncv"` and `"student_bp"`, and
+the `"student_bp"` entry of `test_factory` refuse such a `glm` too, with the
+message of `performNCVTest()` and `performStudentizedBPTest()`, and so does
+`rvalidate_against_reference("studentized_bp", ...)`.** They call the
+implementations behind those two functions rather than the functions, and
+returned a value for it through `runHeteroTests(tests = ...)`,
+`runDiagnostics()`, `cachedTest()`, `runHeteroTestsParallel()` and
+`test_factory$run_test()`. `runHeteroTests()` falls back on `"ncv"` when
+White's, Koenker's, the classical, the quantile regression or the rank
+permutation test stops, so `runHeteroTests(<binomial glm>, data)` returned
+the Cook-Weisberg statistic under the names `white` and `koenker`, tagged as
+a fallback, where 0.14.0 returned White's and the classical test. Decided on
+2026-10-16: it now stops with the refusal of `performWhiteTest()`, as
+`runHeteroTests(<binomial glm>, data, tests = "cook_weisberg")` stops with
+that of `performCookWeisbergTest()`, and with grouped data it returns each
+test as failed, with its refusal. `runDiagnostics()` stops at the same point,
+where it stopped later, at `performRESETTest()`. No name holds a fallback
+computed on such a fit. On an `lm`, a Gaussian `glm` and a weighted `lm`, the
+two names, the factory entry and the default battery return values
+`identical()` to those they returned before.
+
+**`performGQTest()`, `performRESETTest()`, `performWhiteTestBootstrap()` and
+`performWildBootstrapTest()` now read the prior weights of a Gaussian `glm`,
+and `performQuantileRegressionTest()` refuses a weighted one, as it refuses a
+weighted `lm`.** These five read the weights of an `lm`, to refit with them or
+to refuse a weighted fit, and found none on a `glm`, so they took a weighted
+Gaussian `glm` for an unweighted fit. Decided on 2026-10-15: they read its
+prior weights, and give what they give for the same model fitted by
+`lm(..., weights = w)`. `test-input-validation.R` asserts it to `1e-8`, for
+the statistic and the p-value, on four seeded designs, the resampling tests
+from the same seed and the same `B`; the largest differences there are
+`6e-14` in a statistic and `1e-14` in a p-value. On
+`glm(dist ~ speed, data = cars, weights = 1 / speed)`, the two bootstraps
+after `set.seed(1)`:
+
+| Call | 0.14.0 | Now, as for the `lm` |
+| --- | --- | --- |
+| `performGQTest(order_by = "speed")` | 5.42 (p = 0.0004) | 2.65 (p = 0.023) |
+| `performRESETTest()` | F = -21.5 (p = 1.000) | F = 1.37 (p = 0.264) |
+| `performWhiteTestBootstrap(B = 999)` | p = 0.695 | p = 0.701 |
+| `performWildBootstrapTest(B = 999)` | p = 0.378 | p = 0.373 |
+| `performQuantileRegressionTest()` | 2.05 (p = 0.155) | Error: "`performQuantileRegressionTest()` does not support weighted fits: ...", the message for the weighted `lm` |
+
+The observed statistics of the two bootstraps, 0.819 and 0.766, were already
+those of the `lm`; their replicates were drawn as for an unweighted fit. On
+`glm(mpg ~ wt + hp, data = mtcars, weights = 1 / wt)` RESET returned
+F = -6.13 (p = 1.000), and returns 6.11 (p = 0.0065), the value of the `lm`.
+
+No recorded evidence fits a `glm`, a model with an `NA` coefficient or data
+that do not match the fit: the rows of the full sweep for the six tests whose
+checks changed besides the `glm` one, the Pesaran, random-effects,
+variance-form, RESET, spread-level and Davidian-Carroll tests, run again from
+their seeds, are identical.
+
+### Data in another order than the fit
+
+**Calls that returned wrong values on `data` holding the rows of the fit in
+another order now stop with an error.** The tests match the rows of `data` to
+the residuals by row name. A tibble, a data.table, or a data frame whose row
+names were reset, as `dplyr::arrange()` resets them, has row names that only
+number its rows, so such data were matched by position: in another order than
+the fit, or with rows in front of those of the fit, each residual was read
+with another observation's row, without an error. With
+
+```r
+set.seed(1); n <- 120
+d <- data.frame(x = runif(n, 1, 5), z = rnorm(n))
+d$y <- 1 + d$x + d$z + rnorm(n, sd = d$x)
+m <- lm(y ~ x + z, d)
+```
+
+`performKoenkerTest(m, d)` gives 17.56, and
+`performKoenkerTest(m, dplyr::arrange(d, x))` gave 0.114. It now stops with
+"`performKoenkerTest()` cannot match the rows of `data` to the observations
+of the model: `data` has no row names of its own (a tibble, a data.table, or
+a data frame whose row names were reset, as by `dplyr::arrange()`), so its rows
+are matched to the observations by position, and in that order its values are
+not those of the fit: y, x, z differ from the model frame. Pass the rows of
+the fit in the order of the fit, or a data frame with its row names."
+
+Before a test reads `data`, it takes the rows that the row names pick for the
+observations of the fit and compares them, row by row, with every column of
+the model frame of the fit. A column that `data` holds under its own name,
+such as `y` or `x`, is compared value by value, each number to `1e-8` of its
+own size, and dates and times exactly. Any other column is computed from
+`data` as the fit computed it: a term such as `log(y)`, `log(x)`,
+`poly(x, 2)`, `ns(x, 3)` or `offset(o)` through the terms of the fit, and
+weights or an offset given as arguments from the expressions of the call. It
+is computed on all the rows of `data`, as `model.frame()` computed it before
+dropping rows, or else on the matched rows, and compared value by value too.
+So rows that agree on the response but not on a transformed regressor, a
+weight or an offset are told apart, as when the data are sorted on a 0/1
+response. A term that depends on the rows it is computed from, such as
+`I((x - mean(x))^2)`, `I(x > median(x))` or `rank(x)`, comes out otherwise on
+the rows a fit with `subset =` or `na.omit` kept, which are the right rows; it
+is not compared, and neither is a column that names a variable `data` does not
+hold or whose computation fails. A column computed from a vector of the
+workspace, such as `weights = wts`, is read by no test from `data` and needs
+nothing more. For the others, the columns that are compared must tell the
+rows of the fit apart.
+
+The guard refuses data it cannot confirm, even when they are the data of the
+fit. It does so in two cases. One is when no column of the model frame can be
+compared, as with `lm(d$y ~ d$x)`. The other is when the compared columns tie
+on rows of the fit that differ in a term that depends on the rows, or in a
+term of variables of `data` that cannot be computed. That happens with a
+discrete response and a row-dependent regressor on the rows an `na.omit` fit
+kept, as in `lm(score ~ g + I(x > median(x)) + z2)`, and with `y01 ~ myf(x)`
+after `rm(myf)` or `ns()` after `detach("package:splines")`. Pass the full data
+the model was fitted on, with the rows it dropped, or its variables as
+columns of `data`. Data whose rows differ are refused, and so are repeated row
+names. Data with row names of their own, such as
+`d[sample(n), ]`, are still matched by name, the tibble or data.table the
+model was fitted on is accepted, and so are rows after those of the fit. On
+eighteen fits (unweighted, weighted, with an offset given as an argument or as
+a term, `log(y)`, `na.omit` with three rows dropped, a Gaussian `glm`, a
+`fitWLS()` fit, `log(x) + poly(x, 2)`, `model = FALSE`, a discrete response
+with weights or an offset from the workspace, and seven with a term computed
+from the rows under `na.omit` or `subset =`), every exported test on
+the data of the fit, with `data = NULL`, on the same rows shuffled with their
+row names, on the rows the fit kept, and on the tibble and the data.table the
+model was fitted on returns what it returned, `identical()`, except the three
+tests below on the shuffled rows, which returned wrong values, and the
+robust and bootstrap tests that stopped with an error on the tibble of a
+`subset =` fit and now return a value (below); some errors changed their
+message.
+
+The guard covers the 23 tests that returned wrong values on such data:
+`performWhiteTest()`, `performWhiteTestStreaming()`,
+`performWhiteTestRobust()`, `performWhiteTestBootstrap()`, `performBPTest()`
+and `performBreuschPaganTest()`, `performBPTestStreaming()`,
+`performKoenkerTest()`, `performKoenkerTestStreaming()`,
+`performRankPermutationTest()`, `performHighDimensionalTest()`,
+`performParkTest()`, `performSzroeterTest()`, `performHarrisonMcCabeTest()`,
+`performGlejserTest()`, `performHartleyFmaxTest()`, the five group tests
+(`performLeveneTest()`, `performBrownForsytheTest()`,
+`performFlignerKilleenTest()`, `performBartlettTest()`, `performOBrienTest()`),
+`performPesaranTest()` and `performBPRandomEffectsTest()`, and also
+`performCookWeisbergTest()` with `var_formula`, which read the variables of
+the variance formula from the same rows. Six tests that start the same way,
+`performGQTest()`, `performStudentizedBPTest()`, `performBPTestRobust()`,
+`performWildBootstrapTest()`, `performSpatialHeteroTest()` and
+`performQuantileRegressionTest()`, returned the right value on reordered
+numbered data, the quantile test to rounding (a relative difference of
+`3e-15` on the data above), because they take everything but an ordering from
+the fit or refit on the rows; they refuse it too, so that every test that
+reads `data` treats it alike, and so do the registry names `"szroeter"`,
+`"wild_bootstrap"`, `"quantile_regression"` and `"student_bp"` in
+`runHeteroTests()`, which returned the right value too. Exempting them would
+leave the cases with rows in front of those of the fit, on which they were
+wrong. The tests that read nothing from `data`, such as
+`performSpearmanTest()` or `performRESETTest()`, are unchanged.
+`bootstrapTestStatistic()` refused such data already (0.13.0); with one of
+these tests as `test_function` it now stops with the test's message, before
+its own check.
+
+A model fitted with `model = FALSE` keeps no model frame, and the tests
+rebuild it from the data the fit refers to. When those data changed after the
+fit, the rebuilt frame held other rows, and the tests computed on it: after
+`m <- lm(y ~ x + z, d, model = FALSE)` and `d <- dplyr::arrange(d, x)`,
+`performKoenkerTest(m)`, `performKoenkerTest(m, d)` and Koenker's test in
+`runHeteroTests(m)` gave 0.114 instead of 17.56. The response of the rebuilt
+frame is now compared with that of the fit, and its design, times the
+coefficients, plus its offset, with the fitted values, and such a frame is
+refused ("cannot use the model frame of `model`").
+
+A tibble that has more rows than the fit and incomplete rows was renumbered
+when a test dropped those rows, and its rows then matched others: on a fit to
+the first 100 rows of a tibble of 120, three of them incomplete, Koenker's
+statistic was 0.0165 where the rows of the fit give 7.93. It is refused, with
+the advice to pass `as.data.frame(data)`.
+
+**`performWhiteTestRobust()`, `performWhiteTestBootstrap()` and
+`performBPTestRobust()` give the value on the data of the fit where they gave
+another one.** They call White's or the Breusch-Pagan test again on the rows
+they matched to the fit, and a tibble they had subset numbered those rows
+afresh, so the inner test matched them to other observations. With a fit to
+`set.seed(4); ds <- d[sample(n), ]` and `data = tibble::as_tibble(d)`, valid
+data, `performWhiteTestRobust()` and the observed statistic of
+`performWhiteTestBootstrap()` were 3.09 and
+`performBPTestRobust(studentize = FALSE)` 0.140, where the rows of the fit
+give 21.79 and 37.06. They now pass the rows under the row names of the fit,
+and return those values.
+
+`performPesaranTest()`, `performBPRandomEffectsTest()` and
+`performScatterDiagnostic()` read `data` by position, the i-th row with the
+i-th residual, so they gave wrong values on data with row names of their own
+in another order too. With `d$id <- rep(1:12, each = 10)`,
+`d$time <- rep(1:10, 12)` and `set.seed(2); dp <- d[sample(n), ]`, the
+Pesaran statistic was -0.987 on `d` and -0.392 on `dp`, the random-effects
+statistic 1.19 and 0.506, and `performScatterDiagnostic(m, ., "x")` 0.468 and
+-0.080. They refuse such data ("the rows of `data`, matched by name, are not
+in the order of the fit"), data whose row names are not those of the fit,
+which cannot show their order, and data with another number of rows than the
+fit, with the message the random-effects test gave already ("requires `data`
+with 117 observations to match the fitted model, got 120"), where the Pesaran
+test stopped with "arguments imply differing number of rows" and the scatter
+diagnostic with "incompatible dimensions".
+
+**`runHeteroTests()` and `runDiagnostics()` stop with this error, and do not
+fall back on another test for it.** On `dplyr::arrange(d, x)` above,
+`runHeteroTests(m, ...)` returned White's statistic 1.50 and Koenker's 0.114,
+both computed on misaligned rows (21.79 and 17.56 on `d`). When one of their
+tests stops, the runners run a substitute under its name, the last of them the
+Cook-Weisberg test, which reads nothing from `data`; for this refusal there
+is none, so no name can hold a test computed on, or regardless of, such data.
+The error keeps the class of the refusal, `heteroTests_data_rows_error`.
+
+The guard is a stopgap. 0.16.0 replaces it with the model context of the
+roadmap, which takes the response, design and weights from the fit and
+matches the rows of `data` by name or by verified position, so that named
+data in any order, and numbered data in fit order, give the value on the data
+of the fit.
+
+### Seeded resampling in parallel is reproducible
+
+**`bootstrapTestStatistic()`, `performWhiteTestBootstrap()`, the robust tests
+with `bootstrap = TRUE` and `runHeteroTestsParallel()` return the same value
+for the same seed with `parallel = TRUE`, and a different value from the one
+they returned in parallel before.** The replicates computed in worker
+processes drew from generators that `set.seed()` in the session did not
+reach, so a seeded call returned another p-value each time it ran. Replicate
+`i`, or test `i` in `runHeteroTestsParallel()`, now draws from stream `i` of
+a L'Ecuyer-CMRG generator (`parallel::nextRNGStream()`) seeded by one draw
+from the session's generator, on the forked path (`parallel::mclapply()`) and
+on the socket cluster alike, so the value depends on the seed and not on the
+number of workers or the path. With `set.seed(1)`,
+`bootstrapTestStatistic(performKoenkerTest, lm(dist ~ speed, data = cars),
+cars, parallel = TRUE, n_cores = 2)$p_value` gave 0.0740 and then 0.0760 on
+two runs, and gives 0.0830 on every run.
+
+A serial call draws every replicate from the session's generator, as before,
+and returns what it returned: 0.0800 for that call with `parallel = FALSE`.
+The parallel and the serial value differ because their draws differ; both
+are bootstraps of the same data, and
+`tests/testthat/test-parallel-reproducibility.R` checks that their replicates
+have the same distribution. The help pages say this under *Parallel
+replicates*.
+
+**`runHeteroTestsParallel()` with one worker returns a different value for a
+resampling test.** With `n_cores = 1`, and when the default comes to one
+worker, for one test or on a machine with two cores or fewer, it runs the
+tests in the session, where they drew from the session's generator. Test `i`
+draws from stream `i` there too now, so the value is the one the workers
+give, whatever `n_cores`. With `set.seed(99)`,
+`runHeteroTestsParallel(lm(mpg ~ wt + qsec, data = mtcars), mtcars, tests =
+c("koenker", "wild_bootstrap"), n_cores = 1)` gave a wild bootstrap p-value
+of 0.2180 in 0.14.0, that of `performWildBootstrapTest()` called from the
+same seed with the 499 replicates of then (0.2120 with the 999 of now), and
+gives 0.2110, as with `n_cores = 2` or 3.
+
+`performWhiteTestBootstrap(parallel = TRUE)` forked its workers with
+`parallel::mclapply()` on every platform, so on Windows, which cannot fork,
+it stopped with `'mc.cores' > 1 is not supported on Windows` whenever the
+machine had more than two cores. It runs its replicates on a socket cluster
+there, as `bootstrapTestStatistic()` does, and gains `n_cores`, the number of
+workers, which the result does not depend on: with `set.seed(1)`,
+`performWhiteTestBootstrap(lm(dist ~ speed, data = cars), parallel = TRUE,
+n_cores = 2)` gives 0.1750 on every run, against 0.1670 serially.
+
+No recorded evidence runs a resampling test with `parallel = TRUE`.
+
+### Bootstrap tests estimate the weights of a `fitWLS()` fit again
+
+**On a fit returned by `fitWLS()`, `performWildBootstrapTest()`,
+`performWhiteTestBootstrap()` and `bootstrapTestStatistic()` estimate the
+weights again in each replicate by default, so the p-values they return on
+such a fit change.** Since 0.13.0 they held the weights `fitWLS()` estimated
+fixed in every replicate, as if they were known. The replicates then leave out
+the estimation that the observed statistic went through, and the tests
+rejected a true null hypothesis too often, more so with more observations. In
+`inst/validation/weighted-fits-size.R`, the data have standard deviation
+`exp(0.3 x)` and `fitWLS()` fits its default exponential variance function,
+which is correctly specified. With normal errors, 2000 replications and
+`B = 499`, the rejection rates at the 5% level are:
+
+| Test | n | Weights held fixed, before | Estimated again, now | True weights |
+| --- | ---: | ---: | ---: | ---: |
+| `performWildBootstrapTest()` | 150 | 0.0865 | 0.0605 | 0.0540 |
+| `performWildBootstrapTest()` | 600 | 0.1050 | 0.0515 | 0.0480 |
+| `performWhiteTestBootstrap()` | 150 | 0.0640 | 0.0415 | 0.0540 |
+| `bootstrapTestStatistic()` with `performKoenkerTest()` | 150 | 0.0825 | 0.0450 | 0.0455 |
+
+(`inst/validation/weighted-fits-size.csv`, the rows whose weights are
+"estimated, held fixed", "estimated, re-estimated" and "true"). At 2000
+replications the 99% interval around 0.05 is [0.037, 0.063], and all four
+rates with the weights estimated again are inside it. The release gate is set
+at 5000 replications, and against its interval, [0.042, 0.058], the wild
+bootstrap with 150 observations, 0.0605, is outside, above it, and the White
+bootstrap, 0.0415, just below it. Against [0.041, 0.057], the interval around
+0.049, the rate of an exact test with `B = 999`, the wild bootstrap with 150
+observations is outside and the other three are inside. No study of the new
+default at 5000 replications with `B = 999` has been run; `ROADMAP.md` lists
+it under 0.16.0.
+
+Those four rows were measured in 0.12.0 by repeating the resampling outside
+the package, and were not run again. The package reproduces the repetition on
+200 of the 2000 samples of each: the same p-values, the same replicates and
+the same random draws (`inst/validation/weighted-fits-refit-reproduction.csv`).
+
+Each replicate is refitted as `fitWLS()` fitted the model: by least squares,
+as the model `fitWLS()` was given, with its weights if it had any. The
+variance function `fitWLS()` recorded is then fitted again to the residuals,
+with the same form and on the regressors `fitWLS()` evaluated. Last, the
+replicate is refitted with the weights that gives. A replicate whose
+variance function cannot be fitted, where `fitWLS()` would fall back to equal
+weights, counts as a failed replicate, and the p-value is computed from the
+replicates that remain, as for a refit that fails; a warning gives the number
+that failed. `fitWLS()` records the weights of a weighted model it refits, as
+`initial_weights` in its `"variance_function"` attribute, for this. A fit
+made by an earlier version has no `initial_weights`, and its model frame,
+which still holds those weights, is read instead.
+
+The new argument `reestimate_weights` chooses. `NULL`, the default, estimates
+the weights again on a `fitWLS()` fit and holds them fixed on any other model.
+`reestimate_weights = FALSE` holds them fixed and returns what 0.14.0
+returned. `TRUE` on a model that `fitWLS()` did not return is an error. An
+`lm`, a weighted `lm` and a Gaussian `glm` carry no variance function, and they
+return what they returned. Two kinds of `fitWLS()` fit keep the values of
+0.14.0 under the default. One on which `fitWLS()` fell back to equal weights
+estimated no weights. The other has a variance regressor computed from the
+response. Each replicate regenerates the response and holds the design
+fixed, so such a regressor is one that uses a variable of the response which
+the right-hand side of the model does not use, or one that is the response
+term itself, as `~ .` gives. Examples are `~ y` or `~ .` for `y ~ x + z`, and
+`~ y` or `~ x` for `I(y / x) ~ z`. Its weights cannot be estimated again from
+the regressors `fitWLS()` recorded, so the default holds them fixed and warns.
+The rule is conservative for `~ x` with `I(y / x) ~ z`: giving the response as
+a column, `r ~ z`, says that `x` stays. On both kinds of fit, `TRUE` is an
+error. In `bootstrapTestStatistic()` and
+`rbootstrap_test_statistic()` the argument comes after `...`, so it has to be
+named in full.
+
+With `set.seed(1)` before each call, for
+`fit <- fitWLS(lm(dist ~ speed, data = cars))`:
+
+| Call | Before, and with `reestimate_weights = FALSE` | Now |
+| --- | ---: | ---: |
+| `performWildBootstrapTest(fit, cars)` | 0.6730 | 0.6990 |
+| `performWhiteTestBootstrap(fit, cars)` | 0.7640 | 0.7290 |
+| `bootstrapTestStatistic(performKoenkerTest, fit, cars)$p_value` | 0.7020 | 0.6750 |
+
+The functions that call these with their default change with them on a
+`fitWLS()` fit. These are the registered tests `"wild_bootstrap"` and
+`"white_bootstrap"`, which `runHeteroTests()`, `runHeteroTestsParallel()`
+and the functions built on them run by name, and `performWhiteTestRobust()` and
+`performBPTestRobust()` with `bootstrap = TRUE`, and so
+`runAdvancedDiagnostics()` when it bootstraps. They have no argument of their
+own; to hold the weights fixed, call the bootstrap function directly with
+`reestimate_weights = FALSE`.
+
+Of the recorded evidence, only the rows "estimated, held fixed" of
+`weighted-fits-size.R` call these functions on a `fitWLS()` fit. The script
+passes `reestimate_weights = FALSE` there, so they do not move, and it calls
+the package for the rows "estimated, re-estimated".
+
+### The studentized Breusch-Pagan statistic on a `fitWLS()` fit
+
+**On a fit returned by `fitWLS()`, `performStudentizedBPTest()`,
+`performBPTestRobust()` with its default `studentize = TRUE`, and the
+registered `"student_bp"` computed the statistic of the unweighted fit. They
+now compute that of the weighted fit, which is Koenker's.** They read the
+weights from the model frame, and the model frame of a `fitWLS()` fit is that
+of the model `fitWLS()` refitted. It holds that model's weights, none for an
+unweighted model, and not the estimated ones. On a correctly specified fit the
+statistic therefore reported the heteroscedasticity that the weights remove.
+In the design of `inst/validation/weighted-fits-size.R`, with
+`set.seed(s)` for `s` from 1 to 5, `x` and `z` uniform on (1, 5),
+`y = 1 + 2 x + 0.5 z + exp(0.3 x) e` with normal `e`, 150 observations and
+`fit <- fitWLS(lm(y ~ x + z))`, `performStudentizedBPTest(fit)` returned
+p = 0.0019, 0.0015, 4.2e-07, 0.00097 and 0.013. It now returns 0.50, 0.86,
+0.22, 0.56 and 0.53, the p-values of `performKoenkerTest()`. Since 0.15.0 the
+three read the weights of the fit, as the other tests do (decided on
+2026-10-16).
+
+The values change on a `fitWLS()` fit only:
+
+- the statistic and p-value of `performStudentizedBPTest()`;
+- the statistic, the asymptotic p-value and the bootstrap p-value of
+  `performBPTestRobust()`, and so the Breusch-Pagan entry of
+  `runAdvancedDiagnostics()`;
+- `"student_bp"`.
+
+The model frame of a `fitWLS()` fit is unchanged. Nothing else changes. A
+corpus of seeded calls was run on the development version before and after
+the change: the corpus of the review of #129, extended to every test on the
+models that `fitWLS()` did not return.
+
+- On an `lm`, a weighted `lm`, an `lm` with an offset given either way or with
+  weights and an offset, a Gaussian `glm` with and without weights, and a
+  model of `log(y)`, all 472 calls return what they returned, with the same
+  warnings and random draws. 464 are `identical()`. In the other 8 the result
+  holds the `glm`, whose family closures compare equal only up to their
+  environments.
+- On the six `fitWLS()` fits, 228 of the 234 calls of the 39 other tests and
+  runners return what they returned: 226 `identical()`, and 2 up to the
+  `initial_weights` that a fit of a weighted model now records. The six that
+  change are `performStudentizedBPTest()`.
+
+The statistic now equals Koenker's, so on a `fitWLS()` fit it has Koenker's
+level, which was already documented. The weights are taken as known, and with
+the variance function correctly specified and normal errors it rejects 0.077
+of the time at the 5% level with 150 observations and 0.110 with 600
+(`inst/validation/weighted-fits-size.csv`, `performKoenkerTest()`, weights
+"estimated"). The bootstrap of `performBPTestRobust()` now compares the
+statistic with replicates computed the same way. In an exploratory run by the
+reviewer of #129, not recorded in `inst/validation/` (20 samples of a
+correctly specified design, `B = 99`), the 0.14.0 path rejected all 20 and
+the new default 1 of 20, with a mean p-value of 0.498. The statistic still
+drops an offset, as before; that is
+listed for 0.16.0 in `ROADMAP.md`. No recorded evidence calls these on a
+`fitWLS()` fit: `weighted-fits-size.R` runs `performStudentizedBPTest()` and
+`performBPTestRobust()` on fits with known weights only.
+
+### Calls that changed
+
+| Old form | New form | Old form still works |
+| --- | --- | --- |
+| `performArchLMTest(model, lags)` | `performArchLMTest(model, data = NULL, lags = 1)` | In 0.15.x, with a warning, when `lags` is a number given second by position; not in 1.0.0 |
+| `performMcLeodLiTest(model, lags)` | `performMcLeodLiTest(model, data = NULL, lags = 10)` | As above |
+| `performDavidianCarrollTest(model, degree)` | `performDavidianCarrollTest(model, data = NULL, degree = 2)` | In 0.15.x, with a warning, when `degree` is a number given second by position; not in 1.0.0 |
+| `performCookWeisbergTest(model, var_formula)` | `performCookWeisbergTest(model, data = NULL, var_formula = NULL)` | In 0.15.x, with a warning, when `var_formula` is a formula given second by position; not in 1.0.0 |
+| `performNCVTest(model, var_formula)` (deprecated) | `performNCVTest(model, data = NULL, var_formula = NULL)` | As above, with the deprecation warning of 0.14.0 as well |
+| `performHarveyTest(model, auxiliary, studentize)` | `performHarveyTest(model, data = NULL, auxiliary, studentize)` | In 0.15.x, with a warning, when `auxiliary` is a string given second by position, alone or followed by `studentize`; not in 1.0.0 |
+| `performRESETTest(model, power)` | `performRESETTest(model, data = NULL, power = 2:3)` | In 0.15.x, with a warning, when `power` is a number given second by position; not in 1.0.0 |
+| `performSpearmanTest(model)` | `performSpearmanTest(model, data = NULL)` | Yes: `data` is optional |
+| `performSpreadLevelTest(model)` | `performSpreadLevelTest(model, data = NULL)` | Yes: `data` is optional |
+| `performWhiteTest(model, data, ...)` and the 28 other tests that took `data` second | `performWhiteTest(model, data = NULL, ...)` | Yes: `data` is now optional |
+| `performBPTestRobust(model, data, studentized = TRUE)` | `performBPTestRobust(model, data, studentize = TRUE)` | In 0.15.x, with a warning; not in 1.0.0 |
+| `rrunAdvancedDiagnostics(model, data, ...)` | `runAdvancedDiagnostics(model, data, ...)` | In 0.15.x, with a warning; the old name goes in 1.0.0 |
+
+Calls that name their arguments, such as `performArchLMTest(model, lags = 3)`,
+are unchanged and do not warn.
+
+### The `(model, data, ...)` convention
+
+Every test now takes `(model, data, ...)`, with `data = NULL` in second
+position. The nine tests above that took no `data`, which read everything
+they need from the model, use the model frame when it is omitted, as
+`performVarianceFormTest()` and `fitWLS()` have done since 0.12.0. Giving them
+the data does not change the result, except that
+`performCookWeisbergTest(model, data, var_formula)` and `performNCVTest()`
+evaluate `var_formula` in `data`, matched to the residuals by row name, so the
+variance model can use a variable the mean model does not; with `data = NULL`
+it is evaluated in the model frame, as before. `performBoxMTest(data, group)`
+is the documented exception: it tests the covariance matrices of the data,
+not the residuals of a model. `tests/testthat/test-model-data-convention.R`
+checks the signatures, the warnings and that each old and new call returns
+the value of the old one. The registry entries `"cook_weisberg"` and
+`"spread_level"` pass the data on.
+
+The other 29 tests, which read variables from `data` and required it, can now
+be called without it: `data = NULL` stands for the model frame of `model`, so
+`performWhiteTest(model)` returns what
+`performWhiteTest(model, stats::model.frame(model))` returns, which is what
+`runHeteroTests(model)` passes them. A call that gives `data` returns what it
+returned. The model frame holds the terms of the model rather than its
+variables (`log(x)` rather than `x`), so a model that transforms a variable
+or has an `offset()` term still needs `data`, as does a test on a column that
+is not a variable of the model, such as the `group` of `performLeveneTest()`.
+On a weighted fit whose weights are a column of the data (`weights = w`), the
+eight tests that rebuild the design from `data`, `performWhiteTest()`,
+`performWhiteTestRobust()`, `performWhiteTestBootstrap()`, `performBPTest()`
+and `performBreuschPaganTest()`, `performKoenkerTest()`,
+`performRankPermutationTest()` and `performHighDimensionalTest()`, stop with
+"object 'w' not found" without it, as they do when given the model frame, and
+so do they on a fit with `offset = o`. `runHeteroTests()` and
+`runDiagnostics()` then return the Cook-Weisberg test, which they fall back
+on when a test stops, under the names `white` and `koenker` (in 0.14.0 under
+`white` and `breusch_pagan`), so pass `data` for such a fit. One call returns
+another value: `performRESETTest(model, NULL)`, which
+read `NULL` as `power` and returned `NaN`, now computes the test with the
+default powers, and a data frame given second, which was read as one power
+per column, is now read as `data`. In a seeded comparison of 30 tests in 39
+settings on five designs, among them a weighted fit and a fit with `NA` rows,
+565 of the 571 calls that returned a value before return an `identical()`
+value, the other six being such `performRESETTest()` calls, and a call
+without `data` is `identical()` to one given the model frame in all 195
+cases.
+
+### `studentize` everywhere
+
+The argument that chooses the studentized statistic is called `studentize`
+throughout, as in `lmtest::bptest()` and `performHarveyTest()`.
+`performBPTestRobust()` called it `studentized`; the old name is still
+accepted in 0.15.x, does what `studentize` does and warns that it stops
+working in 1.0.0. The field `robust_details$studentized` of the result keeps
+its name, so the returned object does not change.
+
+### `runAdvancedDiagnostics()`
+
+`rrunAdvancedDiagnostics()` is renamed `runAdvancedDiagnostics()`, the last of
+the `r`-prefixed exports 0.14.0 reviewed, so that it follows the camelCase
+names of the other runners. The old name still works, returns what it
+returned and warns with `.Deprecated()` that it goes in 1.0.0, with the names
+deprecated in 0.14.0.
+
+### The return contract
+
+A new help page, `?test_results`, documents every field a `perform*Test()`
+returns: the five every test returns (`statistic`, `parameter`, `p.value`,
+`method`, `data.name`), the optional `alternative` and `estimate`, and the
+fields a few tests add, such as `robust_details` or `bootstrap`.
+`tests/testthat/test-return-contract.R` runs every exported test, and the
+settings that add fields, and fails on a field the page does not document or
+one that breaks it. Six tests needed a change to comply, and no number
+changes in any of them:
+
+- the `parameter` of `performSpearmanTest()`, `performSpreadLevelTest()`,
+  `performBartlettTest()`, `performFlignerKilleenTest()` and
+  `performBPRandomEffectsTest()` gains its name, `df`; it had none, so
+  `print()` showed `t = -0.41855, = 30, p-value = 0.6785`;
+- `performBoxMTest()` gains the `data.name` every other test returns.
+
+Over 156 seeded results of every exported test on four designs, one of them a
+weighted fit, 132 are `identical()` to those of 0.14.0 and the other 24, of
+these six tests, are `identical()` once the added name or `data.name` is
+removed.
+
+### Input validation
+
+`tests/testthat/test-input-validation.R` gives every exported test the same
+four bad inputs: a `glm`, a model with an `NA` coefficient, data that lack
+rows the model was fitted to, and data that lack a variable of the model.
+Where a test already stopped, it now stops with the message the others give:
+
+- the eight tests that read everything from the model check the `data` they
+  are given since 0.15.0, with the messages of the tests that use `data`; the
+  model frame is accepted as it is;
+- `performBPRandomEffectsTest()` names the rows `data` lacks, where it stopped
+  with "arguments must have same length";
+- `performWhiteTestStreaming()` refuses a `glm`, where it stopped with
+  "missing value where TRUE/FALSE needed", and it, `performHarrisonMcCabeTest()`
+  and `performVarianceFormTest()` refuse it with one message.
+
+No value changes: over the 217 calls of the `(model, data, ...)` comparison
+and the 156 results of the return-contract comparison, every result is
+`identical()` to 0.14.0, apart from the `df` names and the `data.name` above.
+The tests that returned a value for one of the four inputs refuse it too, which
+changes what those calls return (*Inputs every test refuses*, above).
+
+### The advice for a small sample
+
+`warnDiagnosticAssumptions()`, and so `generateHeteroRecommendations()`, told
+the user of a sample of fewer than 100 observations to "rely on wild
+bootstrap or permutation-based tests for reliable inference". In the
+package's validation study of the multiplier,
+`inst/validation/wild-multiplier-size.R`, with `B = 999`, the wild bootstrap
+holds its level with Gaussian and `t5` errors at 30, 50 and 100
+observations, but not with skewed ones: with centred exponential errors it
+rejects a true null hypothesis 8.2%, 7.3% and 6.1% of the time at the 5%
+level with the Rademacher multiplier, and 7.8%, 7.0% and 5.9% with the
+Mammen multiplier. The warning now says so, as the help page of
+`performWildBootstrapTest()` does since this release, and asks the user to
+check the residuals for skewness and to read p-values near the level with
+caution. Only the text changes: which warnings are given, and when, does not.
+
+## 0.14.0
+
+0.14.0 reviews the exported names before 1.0.0: it deprecates 22 exports and
+the registry names `"student_bp"` and `"ncv"`, and removes nothing.
+`performBreuschPaganTest()`, `performStudentizedBPTest()` and
+`performNCVTest()` give way to `performBPTest()`, `performKoenkerTest()` and
+`performCookWeisbergTest()`, which gains `var_formula`; the three `*Enhanced`
+functions to `enhanced = TRUE` on their base names;
+`rbootstrap_test_statistic()`, `test()`, `simulate_type_I_errors()` and
+`simulate_power_analysis()` to
+`bootstrapTestStatistic()`, `runDiagnostics()`, `simulate_size()` and
+`simulate_power()`; and twelve internal helpers are to leave the exports (the
+table under *Deprecated names* gives each old name and what to use instead).
+No exported function returns a different value: each deprecated function
+returns what it returned in 0.13.0 and warns, and `performStudentizedBPTest()`
+keeps its own implementation, which disagrees with `performKoenkerTest()` on a
+`fitWLS()` fit until the model frame of such a fit is corrected in 0.16.0. The
+dashboard and benchmark functions, which move to a companion package, are not
+deprecated yet because that package has no name, and the deprecated names are
+removed in 1.0.0.
+
+### Deprecated names
+
+0.14.0 reviews the exported names before 1.0.0. Nothing is removed: each name
+below still works, returns what it returned before and warns with
+`.Deprecated()`, naming its replacement where it has one. The names go in
+1.0.0.
+
+| Deprecated | Use instead | Note |
+| --- | --- | --- |
+| `performBreuschPaganTest()` | `performBPTest()` | The same function under a second name |
+| `performStudentizedBPTest()` | `performKoenkerTest()` | Same statistic, except on a `fitWLS()` fit (below) |
+| `runHeteroTests(tests = "student_bp")` | `tests = "koenker"` | Warns once per call of `runHeteroTests()` or `runDiagnostics()` |
+| `performNCVTest(model, var_formula)` | `performCookWeisbergTest(model, var_formula)` | `performCookWeisbergTest()` gains `var_formula`; with one, it returns what `performNCVTest()` returned |
+| `performNCVTest(model)` | `performCookWeisbergTest(model)` | Same statistic, degrees of freedom and p-value; labelled as the Cook-Weisberg test |
+| `runHeteroTests(tests = "ncv")` | `tests = "cook_weisberg"` | Warns once per call of `runHeteroTests()` or `runDiagnostics()` |
+| `plotResidualsFittedEnhanced(model)` | `plotResidualsFitted(model, enhanced = TRUE)` | `enhanced = FALSE`, the default, keeps the plot the base name drew |
+| `plotDiagnosticSuiteEnhanced(model)` | `plotDiagnosticSuite(model, enhanced = TRUE)` | As above |
+| `checkModelEnhanced(model, data)` | `checkModel(model, data, enhanced = TRUE)` | `checkModel(model)` still checks the class only |
+| `std_error()`, `std_warning()` | None | Internal helpers |
+| `checkData()`, `validateTestInputs()` | None | Internal helpers |
+| `ht_enable_log_capture()`, `ht_log_history()`, `ht_clear_log_history()` | None | `ht_set_log_level()` stays |
+| `TestFactory`, `test_factory` | `registerDiagnostic()`, `runHeteroTests()` | Objects cannot warn: deprecated on their help page and here only |
+| `rbootstrap_test_statistic()` | `bootstrapTestStatistic()` | The same function; each name records its own call in the result |
+| `rcalculateEffectSize()`, `restimate_test_power()`, `rvalidate_against_reference()` | None | Internal helpers |
+| `test(x, tests)` | `runDiagnostics(x$model, x$data, tests)` | Its name masks `devtools::test()`; `summary()` of a `HeteroDiagnostic` object is unchanged |
+| `simulate_type_I_errors()` | `simulate_size()` | Joins the snake_case simulation family |
+| `simulate_power_analysis()` | `simulate_power()` | As above |
+
+`performStudentizedBPTest()` and `performKoenkerTest()` agree to `1e-8` in
+statistic, degrees of freedom and p-value in the designs of
+`tests/testthat/test-koenker-studentized.R`: a Gaussian null, `sd = x^2` and a
+`t5` null at 150 observations, a factor regressor and a weighted fit. Both
+refuse a rank-deficient fit. On a fit returned by `fitWLS()` they do not
+agree: the model frame of that fit still holds the weights of the model
+`fitWLS()` refitted, not the estimated ones, and `performStudentizedBPTest()`
+reads them from there. On the `fitWLS()` design of the same file it returns
+42.60, where `performKoenkerTest()` and an `lm()` fitted with the estimated
+weights return 1.75. `performKoenkerTest()` is the correct one. The deprecated
+name and `"student_bp"` keep their old implementation in 0.14.0, so no value
+changes; the model frame is to be corrected in 0.16.0.
+
+`rrunAdvancedDiagnostics()` stays exported; its name is still under review.
+
+The simulation functions, `simulate_*()` and `sigma_*()`, keep their
+snake_case names on purpose, as a documented family; the rest of the package
+uses camelCase.
+
+### Reference index
+
+The reference index of the pkgdown site groups the functions: the tests of
+the variance by family, and the model checks (`performRESETTest()`,
+`performVIFDiagnostic()`, `performInfluenceDiagnostics()`,
+`performScatterDiagnostic()` and `checkModel()`) apart from them, so that they
+are not mistaken for heteroscedasticity tests. No function changes.
+
+### The planned export list
+
+`tests/testthat/test-public-api.R` lists the exports planned for 1.0.0, the
+names deprecated in 0.14.0 and the three that move to a companion package,
+from the export inventory in `ROADMAP.md`. An export in none of these lists
+fails the test, so a new export has to be added to the plan on purpose.
+
+## 0.13.0
+
+The bootstrap tests change value in three cases where their replicates were
+wrong: on an unweighted fit with an offset given as an argument, which all
+three dropped; in `rbootstrap_test_statistic()`, on data whose rows are in
+another order than the fit's or include rows the fit dropped; and in
+`performWhiteTestBootstrap()`, on a transformed response such as `log(y)`,
+where the p-value was 1 whatever the data. Four more results change value:
+`fitWLS()` keeps the offset of the model it refits, and
+`performVarianceFormTest()` changes with it; the Szroeter test registered for
+`runHeteroTests(tests = "szroeter")`, and so for the functions built on it,
+orders the observations by the fitted values; `runHeteroTests()` and
+`runDiagnostics()` given a survey design no longer test a fit weighted by its
+sampling weights; and `tidy()` returns one row per test. Apart from these, no
+exported test returns a different value for a call that ran in 0.12.0, though
+`rbootstrap_test_statistic()` now refuses data it cannot match to the fit. The
+bootstrap tests also accept a weighted fit, holding the weights of a
+`fitWLS()` fit fixed, and the package gains the Harrison-McCabe test and, as
+`performGlejserTest(robust = TRUE)`, a Glejser test that keeps its level under
+skewed errors.
+
+### Bootstrap tests on a fit with an offset
+
+**`rbootstrap_test_statistic()`, `performWhiteTestBootstrap()` and
+`performWildBootstrapTest()` keep an offset given as an argument, and change
+value on an unweighted fit with one.** `lm(..., offset = o)` keeps `o` in the
+model frame and not in the formula, and each replicate of an unweighted fit
+was refitted from the formula alone, so the replicates were those of a model
+without the offset. A weighted fit already kept it, and an offset written in
+the formula, `offset(o)`, was always evaluated again from the data. For
+`lm(dist ~ speed, data = cars, offset = 0.06 * speed^2)`, with `set.seed(1)`
+and `B = 999`, `rbootstrap_test_statistic()` with `performKoenkerTest()` gave
+p = 0.095 and gives 0.106, and `performWhiteTestBootstrap()` gave p = 0.222
+and gives 0.201, the values the same model gives with the offset in the
+formula. `performWildBootstrapTest()` dropped such an offset too, where it ran
+at all (below): for this model its replicates change and its p-value, 0.079,
+does not. In `inst/validation/offset-refits-size.R`, where the offset is
+`0.5 x^2`, the White bootstrap rejected 0.012 of the time at the 5% level and
+now rejects 0.044. `rbootstrap_test_statistic()` with `performKoenkerTest()`
+rejected 0.047, because Koenker's statistic happens to miss what the dropped
+offset leaves in the residuals, and now rejects 0.040. That is inside the 99%
+interval around 0.045, `[0.037, 0.053]`, the rate at which a test whose level
+is exact gives `p < 0.05` with `B = 199`, which is what the cells with
+`B = 199` are judged against; read against 0.05 it would be below the release
+gate, `[0.042, 0.058]`. With `B = 999`, its default, whose exact rate is
+0.049, it rejects 0.046, inside the release gate and inside the interval
+around 0.049, `[0.041, 0.057]`.
+
+`performWildBootstrapTest()` runs on unweighted fits it stopped on. It
+evaluated the call of the fit again in the model frame, which holds `log(wt)`
+and not `wt`, and `(offset)` in place of the name of an offset given as an
+argument. So `lm(mpg ~ log(wt), data = mtcars)` stopped with
+`object 'wt' not found`, and so did a transformed response, an offset written
+in the formula and an offset given as an argument, unless the model frame
+happened to hold the variables they are computed from. Each replicate is now
+refitted on the design stored with the fit, with its offset. In
+`inst/validation/offset-refits-size.R` it rejects 0.044 of the time at the 5%
+level with an offset given as an argument, and 0.048 with `log(x)` as well.
+Calls that ran before give identical values, except with an offset given as an
+argument (above).
+
+### `rbootstrap_test_statistic()` on reordered data and dropped rows
+
+**`rbootstrap_test_statistic()` matches the rows of `data` to the fit by name,
+and changes value when they are in another order or include rows the fit does
+not have.** It took the fitted values of an unweighted fit by position, so
+data holding the fitted rows in another order regenerated each row from
+another row's fitted value, without an error. For
+`lm(mpg ~ wt + qsec, data = mtcars)` with `mtcars` sorted by `hp`,
+`set.seed(1)` and `B = 999`, the p-value with `performKoenkerTest()` was 0.004
+and is 0.230; with `mtcars` as given it is 0.219. In
+`inst/validation/offset-refits-size.R`, with the rows in a random order, it
+rejected 0.257 of the time at the 5% level and now rejects 0.049.
+
+Rows of `data` the model was not fitted to, such as rows it dropped for
+missing values, are now left out, weighted or not, for the observed statistic
+and the replicates alike; the rows that stay keep the order of `data`, so data
+holding exactly the fitted rows gives the same values as before. Pairs
+resampling drew those rows too, and each replicate was refitted to a different
+number of rows. For `lm(Ozone ~ Solar.R + Wind, data = airquality)`, whose fit
+drops 42 rows, pairs resampling with `performKoenkerTest()`, `set.seed(1)` and
+`B = 999` refitted replicates of 92 to 126 rows and gave the interval 2.884 to
+18.904; every replicate now has the 111 rows of the fit, and the interval is
+3.134 to 19.599. Null resampling refused such data and now runs. Data that
+lacks a row the model was fitted to is refused.
+
+Matching by name cannot see two things. A tibble or a data.table has no row
+names of its own; when it has as many rows as the fit, as the complete cases
+do, they are taken in the order of the fit. And a variable the formula finds
+outside `data`, such as `offset(o)` with `o` in the environment of the
+formula, keeps the order of the fit, so it cannot follow data in another order
+nor the rows that pairs resampling draws; given as an argument, the same
+offset does. The model is therefore refitted to the rows of `data`, and data
+whose refit does not give the residuals of the fit, to a relative `1e-8`, is
+refused, weighted or not: rows in another order taken by position, values that
+differ from those of the fit, or such a variable. These gave wrong replicates
+without an error. A term computed from all the data, such as
+`I(x - mean(x))`, does not count as a difference. The package's own tests
+refuse a variable that is not a column of the data, so only a test function of
+the caller's own could reach that case.
+
+`performWhiteTestRobust(bootstrap = TRUE)` and
+`performBPTestRobust(bootstrap = TRUE)` resample through
+`rbootstrap_test_statistic()`, so their bootstrap p-values change with it,
+here and with an offset (above).
+
+### The White bootstrap on a transformed response
+
+**`performWhiteTestBootstrap()` regenerates a transformed response, and
+changes value on a model with one.** For a response such as `log(y)` in
+`log(y) ~ x`, it wrote each regenerated response into a column named
+`log(y)`, which the refit did not read: the refit computed `log(y)` from `y`
+again, so every replicate was the data of the fit, every replicate statistic
+was the observed one, and the p-value was 1 whatever the data. For
+`lm(log(Ozone) ~ Solar.R + Wind + Temp, data = airquality)`, with
+`set.seed(1)` and `B = 999`, all 999 replicate statistics were the observed
+one, 34.715, and the p-value was 1; it is now 0.004, the value the same model
+gives with `log(Ozone)` held in a column of its own, where
+`performWhiteTest()` gives 0.00007. The regenerated response now goes into a
+column of its own, which the refit reads in place of `log(y)`. In
+`inst/validation/white-bootstrap-transformed-size.R`, with constant variance
+on the log scale, the test rejects 0.047 of the time at the 5% level at 5000
+replications, inside the interval `[0.037, 0.053]` around 0.045, the rate at
+which a test whose level is exact gives `p < 0.05` with `B = 199`, and 0.892
+against a standard deviation that grows with a regressor. Models with a plain
+response give identical values.
+
+### `fitWLS()` on a model with an offset
+
+**`fitWLS()` keeps the offset of the model it refits, and changes value on a
+model with one.** It refitted the model with the estimated weights without the
+offset, whether that was given as an argument, `lm(..., offset = o)`, or
+written in the formula, `offset(o)`, so the weighted fit was that of a model
+without it. For `lm(dist ~ speed, data = cars, offset = 0.06 * speed^2)` it
+returned the coefficients -13.996 and 3.685; it now returns -4.356 and 2.038,
+those `lm()` gives for the same call with the estimated weights. The weights
+themselves do not change: they come from the residuals of the model, which
+carry its offset. `performVarianceFormTest()` refits through the same code and
+changes with it: on that model F = 0.290 (p = 0.593) before and F = 0.773
+(p = 0.384) now. In the design of the guard added to
+`tests/testthat/test-fitwls-offset.R`, an exponential variance function that
+is correctly specified and the offset `2 x^2`, it rejected 70% of the time at
+the 5% level when the offset was a variable of the calling environment, which
+the old code could find, and rejects 4.8% now. `autoCompareRemediations()` and
+`runHeteroTests(tests = "variance_form")` change with them. Models without an
+offset give identical values.
+
+`fitWLS()` and `performVarianceFormTest()` also run on models they stopped on.
+The weighted refit evaluated the call of the fit again in its model frame,
+which holds `log(wt)` and not `wt`, and weights and an offset given as
+arguments as `(weights)` and `(offset)`. So
+`fitWLS(lm(mpg ~ log(wt), data = mtcars))` stopped with
+`object 'wt' not found`, a model fitted with weights that are a column of the
+data with `object 'w' not found`, and a model whose offset is a column of the
+data with `object 'o' not found`. The refit now uses the design stored with
+the fit. On a model fitted with weights, `fitWLS()` replaces them with the
+estimated ones, as it did when the old refit could find them; those calls give
+identical values.
+
+### The Szroeter test run by name
+
+**`runHeteroTests(tests = "szroeter")` changes value.** The registered
+Szroeter test ordered the observations by the second column of the data,
+whatever it was: the response, a regressor or a column the model does not use,
+so the result depended on the order of the columns. For
+`lm(mpg ~ wt + hp, data = mtcars)` with `mtcars` as given it ordered by `cyl`,
+which the model does not use, and gave Q = -0.709 (p = 0.761); depending on
+which column came second, Q ran from -1.419 to 1.333. It now orders by the
+fitted values, so the alternative is that the variance rises with the mean,
+and gives Q = 1.099 (p = 0.136) whatever the order of the columns. With a
+single regressor that is the order of the regressor when its slope is positive
+and the reverse order when it is negative. The fitted values are computed from
+the coefficients, so observations with the same regressors tie exactly, and
+ties keep the order of the rows the model was fitted to.
+
+Everything that runs the registered test changes with it: `runDiagnostics()`,
+`test()` and `summary()` on a `HeteroDiagnostic`, `compareModelDiagnostics()`,
+`compareTestResults()`, `runSurveyHeteroTests()`, `runHeteroTestsParallel()`,
+`cachedTest()` and the dashboard, when given `"szroeter"`.
+`performSzroeterTest()` does not change, and no number recorded in
+`inst/validation/` moves: the studies call it with an explicit ordering.
+
+### Survey designs and their sampling weights
+
+Survey designs are no longer tested as if their sampling weights were
+precision weights, and `runSurveyHeteroTests()` says what it does.
+
+The help page of `runSurveyHeteroTests()` described a survey-weighted fit. The
+weights never reached the fit: they were passed to `lm()` as a local variable,
+where `lm()` does not look, and a `tryCatch()` refitted without them, so the
+function ran the ordinary tests on an ordinary least-squares fit. It still does, and apart
+from the Szroeter test (above) its values are unchanged. The help page now says
+that the design is not used and when the tests hold their level regardless,
+and the function warns when the design has unequal weights or clusters.
+
+`runHeteroTests(formula, design)` and `runDiagnostics(formula, design)` took a
+different route. They fitted the model with `survey::svyglm()` and tested that
+fit, whose residuals are multiplied by the square roots of the sampling
+weights. Sampling weights say how many population units an observation stands
+for, not how variable its error is. In `inst/validation/survey-designs-size.R`,
+on homoscedastic data sampled with probabilities that depend on the regressor,
+that statistic rejected 97% to 100% of the time; on heteroscedastic data it
+rejected 6% to 12% of the time where the unweighted test rejected 98% to 100%.
+**These two calls change value**: they now do what `runSurveyHeteroTests()`
+does, with the same warning. A `svyglm` fit passed to a test directly is
+refused.
+
+The package has no design-based test of constant variance. The same study
+tried two, a Wald and a score test on the regression of the squared residuals
+on the regressors, estimated with the design. They are the only procedures
+near their level when selection depends on the response or the sample is
+clustered, where the function itself rejects 37% to 100% of the time. In the
+designs the ordinary tests handle correctly they rejected 6% to 25% of the
+time, and 3 of their 40 size cells fell inside the Monte Carlo band. They were
+not adopted.
+
+### `tidy()` of a test with two parameters
+
+**`tidy()` returns one row per test.** A result with two parameters, such as
+the F statistic of `performVarianceFormTest()` or the wild bootstrap with its
+degrees of freedom and number of replications, came back as two rows, and
+every table and plot built from the tidy output counted the test twice. The
+second parameter is now in a new column, `parameter2`, and `estimate` is given
+when a test reports exactly one. `glance()` follows.
+
+### Bootstrap tests on a weighted fit
+
+`performWildBootstrapTest()`, `performWhiteTestBootstrap()` and
+`rbootstrap_test_statistic()` accept a weighted fit. In 0.12.0 they refused
+one, because each replicate was refitted without the weights. A weighted fit
+is ordinary least squares on `sqrt(w) y` and `sqrt(w) X`, where the null
+hypothesis is constant variance, and the three now resample there: they draw
+from the Pearson residuals, divide each draw by `sqrt(w)` to return it to the
+scale of its observation, and refit with the weights.
+`performWhiteTestRobust(bootstrap = TRUE)` and
+`performBPTestRobust(bootstrap = TRUE)`, which resample through
+`rbootstrap_test_statistic()`, accept a weighted fit too. Accepting a weighted
+fit changes nothing for an unweighted one; there the same seed gives the same
+values as before, except in the three cases corrected above: an offset given
+as an argument, data in another order or with rows the fit dropped, and a
+transformed response in the White bootstrap.
+
+In `inst/validation/weighted-fits-size.R`, at 2000 replications with
+`B = 499`, the three reject a correctly weighted fit 0.045 to 0.054 of the time
+at the 5% level in two designs, and reject weights that are too weak in every
+replication.
+
+On a `fitWLS()` fit they over-reject. They hold the estimated weights fixed in
+each replicate, as the asymptotic tests take them as known, and share their
+error. In a design where the variance function is correctly specified and the
+true weights give 0.054 with 150 observations and 0.048 with 600, the three
+reject 0.064 to 0.086 of the time at the 5% level with 150 observations, and
+the wild bootstrap 0.105 with 600; `performKoenkerTest()` rejects 0.077 and
+0.110. Estimating the weights again in each replicate, which the package does
+not do, brings the three to 0.042 to 0.060 with 150 observations and the wild
+bootstrap to 0.051 with 600. That is why the question is open: `ROADMAP.md`
+proposes an argument that does it, and leaves its default to 0.14.0. A default
+that estimates the weights again will change the values these tests return on
+a `fitWLS()` fit.
+
+`performQuantileRegressionTest()` still refuses a weighted fit, and its help
+page says why.
+
+### The Harrison-McCabe test
+
+`performHarrisonMcCabeTest()` adds the test of Harrison and McCabe (1979)
+beside `performGQTest()` and `performSzroeterTest()`, the other two tests
+along an ordering of the observations. The statistic is the share of the
+residual sum of squares that falls in the first part of the sample ordered by
+a variable, and it agrees with `lmtest::hmctest()` to `1e-8`. The p-value is
+exact under normal errors given the regressors, by Imhof's (1961) formula, and
+reproduces the exact critical values published by Harrison (1981). The 1979
+article was not read: the definition rests on Harrison (1981), by its first
+author, and on `lmtest`. `lmtest::hmctest()` simulates its p-value from a
+regression on a constant alone, whatever the model, and
+`skedastic::harrison_mccabe()` drops repeated eigenvalues before applying
+Imhof's formula, which changes its p-value. Weighted fits are supported.
+
+In `inst/validation/harrison-mccabe-size-power.R`, at the 5% level, the test
+rejects a true null hypothesis 4.3% to 5.3% of the time under Gaussian errors
+at 40 to 400 observations, with and without weights. Under `t5` errors it
+rejects 11.7% to 16.3%, as the Goldfeld-Quandt and Szroeter tests do, and the
+help page points to `performGlejserTest(robust = TRUE)` there. Against the two
+alternatives of Pass A it has 2.3 to 4.8 percentage points less power than the
+Goldfeld-Quandt test and 5.4 to 7.9 less than Szroeter's. No value any other
+function returns changes.
+
+### A Glejser test for skewed errors
+
+`performGlejserTest()` gains `robust = TRUE`, the Glejser test of Im (2000)
+and of Machado and Santos Silva (2000), which keeps its level when the errors
+are skewed. No other R implementation of it was found.
+
+Glejser's statistic has its nominal level when positive and negative errors
+are equally likely. When they are not, and the variable tested is correlated
+with the regressors, it does not in general, and a larger sample does not
+help. In `inst/validation/glejser-skewed-errors.R`, at the 5% level and with
+50 to 1000 observations, it rejected a true null hypothesis 12% to 14% of the
+time under exponential errors and 15% to 18% under lognormal errors, which is
+what the asymptotic theory gives for those designs. The help page said the
+test was not valid there and pointed to Koenker's test.
+
+With `robust = TRUE` the auxiliary regression is run on `|e| - m e`, where `m`
+is the proportion of positive residuals less the proportion of negative ones.
+In the same study it rejected 4.4% to 5.7% of the time from 150 observations
+on, and 5.7% to 6.6% at 50 under skewed errors. Under Gaussian errors it gives
+up one or two percentage points of power at 50 observations. Against Koenker's
+statistic on the same regressor it has 1 to 4 points less power under Gaussian
+errors and 1 to 10 points more under exponential errors.
+
+The default is `robust = FALSE`, and every value the function returned before
+is unchanged.
+
+### Measured and not adopted
+
+Two of the candidate tests in `ROADMAP.md` were measured and are not in the
+package, because they do not hold their level. The studies ship in
+`inst/validation/`, and the roadmap says what either would need.
+
+- The modified Wald test for group-wise heteroscedasticity in a fixed-effects
+  panel, as Stata's `xttest3` computes it. In
+  `inst/validation/modified-wald-size-power.R`, at 5000 replications, it
+  rejects a true null hypothesis at the 5% level 10% to 100% of the time in
+  balanced panels of 10 to 100 units and 5 to 100 periods, under Gaussian and
+  `t5` errors.
+- The consistent test of a variance function of Dette, Neumeyer and Van
+  Keilegom (2007), as a prototype that follows the authors' manuscript. In
+  `inst/validation/variance-form-dnvk-size-power.R`, at 5000 replications, its
+  Cramér-von Mises statistic rejects a true exponential or power variance
+  function that is not constant 1.9% to 3.6% of the time at the 5% level, at
+  50 to 400 observations under Gaussian and `t5` errors.
+
+### Also
+
+- `listDiagnostics()` returns the names `runHeteroTests(tests = )` accepts,
+  sorted: the diagnostics the package registers and any added with
+  `registerDiagnostic()`. No exported function listed them before. Given a
+  name that is not registered, `runHeteroTests()` now stops with
+  `Unknown tests: <name>. listDiagnostics() returns the registered names.`
+  It used to say only `Unknown tests: <name>`, in an error raised from the
+  internal `.run_hetero_core()`.
+
+- `runHeteroTests()` with a fitted model and grouped data now runs. The
+  per-group refit passed the weights to `lm()` as a local variable, where
+  `lm()` does not look, and stopped with
+  `invalid type (closure) for variable '(weights)'` for every `lm`, `glm` and
+  parsnip fit, weighted or not. Only a formula with grouped data worked. Each
+  group is now fitted by evaluating the model's own call on it, so a weighted
+  model uses that group's rows of the weights, a `glm` keeps its family and a
+  `subset` is applied within the group. A model whose weights, offset or
+  subset are vectors in the workspace cannot be split by group and is refused
+  with a message that says so.
+
+- `autoplot()` of a test suite showed nothing when the tests rejected. The
+  bars were the p-values on a linear axis from 0 to 1, so a test with
+  p = 0.002 had no visible bar, and the colouring of significant tests was
+  decided by `isTRUE(p < 0.05)`, which is `FALSE` for a suite of more than one
+  test. The plot now draws one horizontal bar per test whose length is
+  `-log10(p)`, on an axis labelled with p-values, with a dashed line at a new
+  `alpha` argument (default 0.05) and the p-value printed beside each bar. The
+  grouped method draws one panel per group; it used to add a panel variable
+  for the `suggestions` column as well.
+
+- `plotBeforeAfter()` draws the two models in two panels, each with its own
+  axes, where it used to overlay them in one panel in two similar blues.
+  Weighted residuals and the residuals of a transformed response are not in
+  the units of the original ones, so a common axis could flatten one of them.
+
+- `print()` on the result of `suggestRemediation()` now uses its print method.
+  The method existed but was not registered in `NAMESPACE`, so results printed
+  as a bare list with an `attr(,"class")` line. This also affects the
+  dashboard's suggestions panel and the remediation section of generated
+  reports, which print the same object.
+
+- `suggestDiagnosticsForProfile()` had two definitions, and only the one
+  loaded last ever ran. The other still recommended `"hc_covariance"`, a
+  diagnostic removed in 0.8.0, for data of 10,000 rows or more; had it been
+  the one loaded, passing its recommendations to `runHeteroTests(tests = )`
+  would have stopped with `Unknown tests: hc_covariance`. It is gone, and the
+  function returns exactly what it returned before. New tests check that every
+  name it can return is a registered diagnostic, and that no function in the
+  package has two different definitions.
+
+- The cache that keeps the result of each input validation, so that the same
+  model and data are not checked twice, now keeps the 1000 most recent
+  results. It kept every one, and a test on a new model, as in a simulation,
+  never reuses one, so it grew by three entries with each test: after 10^5
+  calls of `performWhiteTest()` on new models with 150 observations it held
+  300,001 entries and R's memory had grown by 655 MB, where it now holds 1000
+  and has grown by 3 MB. Simulation workers had reached 7.6 to 8.9 GB each. A
+  test repeated on the same model still reuses the result, and no value
+  changes.
+
+- The help page of `performStudentizedBPTest()` called `performKoenkerTest()`
+  "the absolute-residual variant", which it has not been since 0.6.5. Both
+  compute Koenker's studentized `n R^2` statistic from the regression of the
+  squared residuals on the regressors, and the page now says so. It also cited
+  a section of Davidson and MacKinnon (2004) that does not exist; the test is
+  in Section 7.5. The vignette on statistical theory gave the classical
+  Breusch-Pagan statistic as `n R^2`, which is Koenker's, and said that
+  `performKoenkerTest()` uses the absolute residuals; it now gives each
+  statistic as the package computes it. No value changes.
+
+- The help page of `performWhiteTestBootstrap()` gave its p-value as the
+  share of replicates whose statistic is at least the observed one. Since
+  0.7.0 the function has returned `(1 + #{T_b >= T_obs}) / (B_eff + 1)`,
+  where `B_eff` counts the replicates with a finite statistic, and the page
+  now says so. Its example of `parallel = TRUE` now runs only where that
+  starts at most two processes, the limit of `R CMD check --as-cran`. No
+  value changes.
+
+- The release workflow runs `R CMD check --as-cran --run-donttest` on the
+  source tarball it is about to tag, and creates no tag or GitHub release if
+  that check warns or errors. The check used to run only weekly and on
+  demand, and it failed on the example above on 2026-09-28 and 2026-10-05
+  without holding up 0.12.0.
+
+## 0.12.0
+
+Tests on weighted fits change value, and the package gains a test of the shape
+of the variance. No test changes value on an unweighted fit: re-running the
+full sweep reproduces its 32 existing rows digit for digit. `fitWLS()` with its
+default arguments returns the weights it returned in 0.11.2 for any model with
+an intercept.
+
+### Tests on a weighted fit read the wrong residuals
+
+`lm(..., weights = w)` states that the error variance is `sigma^2 / w_i`. The
+raw residuals of such a fit are heteroscedastic by assumption, and every test
+read them. A model fitted with exactly the right weights was therefore
+rejected as often as the same model fitted with none, and the workflow the
+README and the vignettes describe -- diagnose, refit with `fitWLS()`, test
+again -- could not succeed.
+
+`inst/validation/weighted-fits-size.R` measures it: data with `sd = x^2`,
+150 observations, a model fitted with weights `1 / x^4`, 400 replications. Run
+against 0.11.2, the 27 heteroscedasticity diagnostics that ran all rejected in
+400 samples out of 400, and three could not run at all. The 27 that accept a
+weighted fit now reject between 2.2% and 7.7% of the time, against a Monte
+Carlo standard error of 1.1%. A fit from `fitWLS()` fared no better: with the
+variance function correctly specified, `performKoenkerTest()` on 0.11.2
+rejected the weighted fit 99.9% of the time.
+
+The tutorial vignette showed the fault on real data. For `quakes`,
+`compareModelDiagnostics(list(base_model, wls_model))` reported a White
+statistic of 125.6 for the least-squares fit and 249.2 for the weighted one,
+and Breusch-Pagan statistics of 191.9 and 463.7, directly above the sentence
+"The weighted least squares fit typically reduces the heteroscedasticity
+metrics." It now reports 42.2 and 40.8 for the weighted fit.
+
+On a weighted fit the tests are now computed from the Pearson residuals
+`sqrt(w_i) * e_i`. Those are the residuals of the equivalent unweighted
+regression of `sqrt(w) y` on `sqrt(w) X`, and they have constant variance when
+the weights are right. `car::ncvTest()` and `plot.lm()` make the same choice.
+The null hypothesis becomes that the weights are adequate.
+
+- Every residual-based test reads the Pearson residuals. Variance regressors,
+  grouping variables and ordering variables stay on their original scale.
+- `performNCVTest()` and `performCookWeisbergTest()` now reproduce
+  `car::ncvTest()` on a weighted fit to `1e-8`. They did not before.
+- `performGQTest()` refits each segment with its weights and compares weighted
+  residual sums of squares. It reproduces `lmtest::gqtest()` on the
+  transformed regression to `1e-8` at `fraction` 0.1, 0.2 and 0.3.
+- `performRESETTest()` fits the augmented model by weighted least squares.
+  Before, it compared a weighted restricted fit with an unweighted augmented
+  one, which are not nested, and rejected 23.0% of the time under the null in
+  the design above. It now rejects 5.5%.
+- `performArchLMTest()` and `performMcLeodLiTest()` read a variance that rises
+  along the sample as volatility clustering, whatever the weights: 72.3% and
+  79.7% on a correctly weighted fit. Now 4.0% and 4.8%.
+- `performStudentizedBPTest()` used the raw residuals and weighted the
+  auxiliary regression instead, the treatment in `lmtest::bptest()`, which
+  tests the raw residuals and is therefore not a reference for weighted fits.
+  It now agrees with `performKoenkerTest()` on weighted fits as it does on
+  unweighted ones.
+- `performStudentizedBPTest()`, `performBPTestRobust()` and
+  `performWildBootstrapTest()` failed with `object 'w' not found` whenever the
+  weights were a column of the data. They rebuilt the design matrix from the
+  model frame, where that column is stored as `(weights)`.
+- The residual plots (`plotResidualsFitted()`, `plotSpreadLevel()`,
+  `plotBeforeAfter()` and the others) and the variance-pattern summary of the
+  recommendation engine use the Pearson residuals of a weighted fit.
+  `plotBeforeAfter()` drew a weighted remedy as heteroscedastic as the
+  original however good the weights were.
+- `performWildBootstrapTest()`, `performWhiteTestBootstrap()`,
+  `rbootstrap_test_statistic()` (and so `bootstrap = TRUE` in the two `*Robust`
+  tests) and `performQuantileRegressionTest()` refit the mean model without
+  the weights. They now refuse a weighted fit, as `rbootstrap_test_statistic()`
+  already refused a `glm`, instead of returning a statistic for a different
+  model.
+- A fit with a zero weight is refused: the observation is not part of the fit
+  and its Pearson residual is an artificial zero.
+
+### Weights that were estimated are not weights that are known
+
+The reference distributions take the weights as given. That is exact for
+weights known in advance and approximate for a `fitWLS()` fit, whose weights
+come from the same residuals, and the approximation does not improve with the
+sample size. With the variance function correctly specified and Gaussian
+errors, at the 5% level (2000 replications, standard error 0.5%):
+
+| Test on a `fitWLS()` fit | n = 150 | n = 600 |
+| --- | ---: | ---: |
+| `performKoenkerTest()` | 7.7% | 11.0% |
+| `performWhiteTest()` | 6.3% | 8.3% |
+| `performBPTest()` | 10.6% | 11.8% |
+| `performHarveyTest()` | 0.0% | 0.0% |
+| `performVarianceFormTest()` | 4.8% | 5.2% |
+
+Harvey's test never rejects because it repeats the regression the weights were
+estimated from. The statistics remain useful for comparing a weighted fit with
+the original, which is what `compareModelDiagnostics()` does, but their
+p-values on a `fitWLS()` fit are not calibrated. The help page of
+`performKoenkerTest()` says so, and the last row is the test built for that
+case.
+
+### `performVarianceFormTest()`: is the variance function the right shape?
+
+Every other test in the package has constant variance as its null hypothesis.
+Rejecting it says that the variance moves with some variables, not whether an
+exponential or a power function of them describes it. The new test takes a
+variance function as its null hypothesis.
+
+It fits the variance function, refits the model by weighted least squares, and
+regresses the squared standardized residuals on the regressors of the variance
+function and on terms added to them: by default their squares and pairwise
+products, or the terms of a one-sided formula given as `against`. The
+statistic is the F test of the added terms, the regression-based construction
+of Wooldridge (1990, 1991). Keeping the variance regressors in that regression
+is what makes the test valid with estimated weights, and it is also where the
+information is. A Koenker test on the weighted fit asks about directions the
+estimation has already fitted: with variance `x^3` fitted as exponential, at
+600 observations, it rejected 6.9% of the time, less often than the 11.0% it
+rejects when the fitted form is right. The new test rejected 92.9%. The White
+test, which also contains squares, rejected 87.9%, but its level on a
+`fitWLS()` fit is not 5%.
+
+`inst/validation/variance-form-size-power.R` runs both forms against five
+true variance functions at 50, 150 and 400 observations with Gaussian and
+`t_5` errors, 5000 replications a cell:
+
+- When the form under test is the true one, or the variance is constant, the
+  rejection rate runs from 4.2% to 5.7% over the 24 cells, and all of them are
+  inside the release-gate interval [0.042, 0.058].
+- Against a log-variance that is quadratic in `x`, power is 51.7% at 50
+  observations and 98.0% at 150 for the exponential form.
+- Against the other log-linear form, power grows more slowly: 22.4% at 150
+  observations and 74.1% at 400 for an exponential null and variance `x^3`.
+- Against `sigma^2 = 0.5 + x`, which is close to both forms over the range of
+  `x`, it rejects between 4.3% and 6.6% of the time. The test cannot separate
+  shapes the data cannot separate, and the help page says so.
+
+The test accepts either the unweighted model with `var_formula` and `form`, or
+a `fitWLS()` result, whose variance function it then tests. It is registered
+as `"variance_form"` for `runHeteroTests()`.
+
+### `fitWLS()` fits the variance function it is asked for
+
+`fitWLS(model, data = NULL, var_formula = NULL, form = c("exponential",
+"power"))`. `var_formula` names the variance regressors and `form` the shape:
+exponential, Harvey's (1976) `log sigma^2 = g0 + z'g`, or power, Park's (1966)
+`sigma^2` proportional to `z^d`. The defaults reproduce 0.11.2. The fit
+carries the variance function as its `"variance_function"` attribute, next to
+the `"variance_model"` attribute it already had.
+
+One value changes. The variance function now always has its own constant.
+`fitWLS()` regressed `log(e^2)` on the model's design matrix, so for a mean
+model without an intercept the log-variance had no constant either, which
+pins the variance at 1 where the regressors are zero. Models with an intercept
+are unaffected.
+
+### Withdrawn before release
+
+An additive variance function, `sigma^2 = a + z'b`, was implemented as a third
+form and removed. Nothing keeps its fitted variances positive. Under its own
+null, at 5000 replications, the test rejected 6.1% of the time with 150 and
+with 400 observations, outside the release gate, and the fitted variances were
+not all positive in 17% of samples at 50 observations and 6% at 150. It needs a
+constrained estimator before it can be offered.
+
+### Also
+
+- The Park (1966) reference pointed at another paper. Its DOI is
+  `10.2307/1910108` and it is a one-page note, *Econometrica* 34(4), 888. The
+  help page cited `10.2307/1909774`, which is Henshaw (1966), with pages
+  888-898, and the theory vignette gave 888-908.
+- `tests/testthat/test-weighted-fits.R` and `test-variance-form.R` pin the
+  corrections by simulated size and power as well as by reconstruction, since
+  no stored value and no comparison with `lmtest::bptest()` would have caught
+  the fault.
+- The full sweep covers `performVarianceFormTest()`: size 5.8%, power 97.8%
+  against a log-variance quadratic in `x`.
+- The tutorial vignette gains a step that tests the variance function of its
+  weighted fit.
+
 ## 0.11.2
 
 Changes requested by the CRAN review of the 0.11.1 submission. No statistic,

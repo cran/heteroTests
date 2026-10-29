@@ -6,10 +6,11 @@
 \usage{
 performWildBootstrapTest(
   model,
-  data,
-  B = 499,
+  data = NULL,
+  B = 999,
   distribution = c("rademacher", "mammen"),
-  progress = interactive()
+  progress = interactive(),
+  reestimate_weights = NULL
 )
 }
 \arguments{
@@ -18,15 +19,39 @@ residual variance is to be assessed.}
 
 \item{data}{A \link[base:data.frame]{base::data.frame} (or compatible object) containing the
 variables referenced in \code{model}. The data must include all observations used
-to fit \code{model} and should not contain unresolved missing values.}
+to fit \code{model} and should not contain unresolved missing values.
+When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
+terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
+a model that transforms a variable needs \code{data}, as does a
+model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
+argument is a column of the data, which the model frame holds as
+\code{(weights)} or \code{(offset)}.}
 
-\item{B}{Integer number of bootstrap replications. Defaults to \code{499}.}
+\item{B}{Integer number of bootstrap replications. Defaults to \code{999}, which
+is the default of every resampling test in the package since 0.15.0; it
+was \code{499} before. The p-value is \verb{(1 + #) / (B_eff + 1)}, so a test at
+level \code{alpha} is exact only when \code{alpha * (B + 1)} is an integer, which
+999 is at the 5\% and 1\% levels.}
 
 \item{distribution}{Multiplier distribution used for the wild perturbation.
 Supported options are "rademacher" and "mammen".}
 
 \item{progress}{Logical flag controlling whether progress should be reported
 when running the bootstrap loop.}
+
+\item{reestimate_weights}{Whether each replicate estimates the weights of a
+\code{\link[=fitWLS]{fitWLS()}} fit again from the variance function \code{fitWLS()} recorded on it.
+\code{NULL}, the default, does so for a \code{fitWLS()} fit and holds the weights
+fixed for any other model. \code{FALSE} holds them fixed, as every call did
+before 0.15.0. \code{TRUE} is an error for a model that \code{fitWLS()} did not
+return, or on which it fell back to equal weights. Each replicate
+regenerates the response and holds the design fixed, so a variance
+regressor that uses a variable of the response which the right-hand side
+of the model does not use, such as \code{y} or \code{x} for \code{I(y / x) ~ z}, or that
+is the response term itself, as \code{~ .} gives, cannot be estimated again:
+\code{NULL} then holds the weights fixed, with a warning, and \code{TRUE} is an
+error. Giving the response as a column of the data, as in \code{r ~ z}, says
+which variables stay. See \emph{Weighted fits}.}
 }
 \value{
 An object of class \code{htest} containing the observed
@@ -48,10 +73,105 @@ all power. Each bootstrap sample is therefore built from leverage-standardised,
 mean-centred residuals \eqn{r_i = e_i/\sqrt{1-h_{ii}}} (which have a common
 variance under \eqn{H_0}) resampled i.i.d. and perturbed by a wild multiplier
 \eqn{v_i}, so that \eqn{y_i^* = \hat y_i + r^*_i v_i}. The statistic is recomputed
-on each refit and the p-value is \eqn{(1 + \#\{T_b^* \ge T\})/(B + 1)}. Under
-\eqn{H_0} this controls size even for heavy-tailed errors; under the alternative
-the observed statistic is extreme relative to the homoscedastic reference, giving
-power.
+on each refit and the p-value is \eqn{(1 + \#\{T_b^* \ge T\})/(B + 1)}. The test holds its level with Gaussian
+and heavy-tailed \eqn{t_5} errors, and with skewed errors only from about
+200 observations; see \emph{Size}. Under the
+alternative the observed statistic is extreme relative to the homoscedastic
+reference, giving power.
+
+Each replicate is refitted on the design matrix of the fit, with its
+offset, whether that was given as an argument or written in the formula.
+The formula is not evaluated again, so a transformed regressor such as
+\code{log(x)}, or a transformed response, is refitted on the scale of the fit.
+}
+\section{Size}{
+
+In \code{inst/validation/wild-multiplier-size.R} and
+\code{inst/validation/wild-no-multiplier-size.R}, with \code{B = 999}, 5000
+replications per cell and the design \code{lm(y ~ x1 + x2)} with \code{x1} uniform on
+(1, 5) and \code{x2} standard normal, the test rejected a true null hypothesis at
+the 5\% level as often as this. With \code{B = 999} a test whose level is exact
+rejects 4.9\% of the time, and the release gate's interval is 0.042 to 0.058.
+
+\tabular{llrrrr}{
+   Errors \tab Multiplier \tab n = 30 \tab n = 50 \tab n = 100 \tab n = 200 \cr
+   Gaussian \tab Rademacher \tab 0.0442 \tab 0.0476 \tab 0.0482 \tab 0.0448 \cr
+   Gaussian \tab Mammen \tab 0.0430 \tab 0.0508 \tab 0.0488 \tab 0.0470 \cr
+   \eqn{t_5} \tab Rademacher \tab 0.0472 \tab 0.0444 \tab 0.0492 \tab 0.0438 \cr
+   \eqn{t_5} \tab Mammen \tab 0.0460 \tab 0.0454 \tab 0.0476 \tab 0.0460 \cr
+   centred exponential \tab Rademacher \tab 0.0820 \tab 0.0734 \tab 0.0608 \tab 0.0526 \cr
+   centred exponential \tab Mammen \tab 0.0782 \tab 0.0698 \tab 0.0586 \tab 0.0534 \cr
+}
+
+With skewed errors, \code{rexp(n) - 1}, either multiplier needs about 200
+observations to hold the level: both are outside the gate at 30, 50 and 100
+and inside it at 200. The excess comes from the multiplier: without it the
+rate falls, by 1.7 points at 30 and 50 observations. Plausibly, the
+Rademacher multiplier makes the bootstrap errors symmetric, so the
+reference distribution loses the skewness of the residuals, on which the
+squared residuals of the refit depend, and the Mammen multiplier keeps
+their third moment but doubles their fourth. A plain
+residual bootstrap, the same resampling without a multiplier (\eqn{v_i = 1}),
+which already imposes the null hypothesis, rejected 0.0648, 0.0562, 0.0482
+and 0.0466 of the time with the same errors at 30, 50, 100 and 200
+observations, holding the level from 50, and 0.042 to 0.047 with Gaussian
+and \eqn{t_5} errors. It costs a little power in small samples: against
+\eqn{\sigma_i^2 = \exp(0.4 x_{1i})}{sigma_i^2 = exp(0.4 x1_i)} with Gaussian
+errors it rejected 0.180, 0.354 and 0.744 of the time at 30, 50 and 100
+observations, where the Rademacher multiplier rejected 0.194, 0.361 and 0.745,
+about 1.4 points less at 30. It will be available as
+\code{distribution = "none"} in 1.0.0, with \code{"rademacher"} kept as the default.
+}
+\section{Weighted fits}{
+
+A fit with weights \eqn{w_i} is ordinary least squares on
+\eqn{\sqrt{w_i}\, y_i}{sqrt(w_i) y_i} and \eqn{\sqrt{w_i}\, x_i}{sqrt(w_i) x_i},
+whose errors have constant variance under the null hypothesis, and the
+bootstrap works in that regression. The statistic is computed from its
+residuals, the Pearson residuals \eqn{\sqrt{w_i}\, e_i}{sqrt(w_i) e_i}, with
+the auxiliary regressors on their original scale; the residuals that are
+resampled are the Pearson residuals divided by
+\eqn{\sqrt{1 - h_{ii}}}{sqrt(1 - h_ii)}, with the leverages of that
+regression, and centred; and each replicate refits it. With equal weights
+the result is that of the unweighted fit.
+
+Weights given to the fit are known, and they are held fixed in every
+replicate. On a fit returned by \code{\link[=fitWLS]{fitWLS()}} they were estimated from the same
+data, and since 0.15.0 they are estimated again in each replicate by
+default (\code{reestimate_weights}). The replicate is fitted as the model
+\code{fitWLS()} was given: by least squares, with the weights that model had, if
+any. The variance function \code{fitWLS()} recorded, with its form, is then
+fitted again to the residuals, on the regressors \code{fitWLS()} evaluated, and
+the replicate is refitted with the weights it gives. The statistic is
+computed from the Pearson residuals of that refit, so the reference
+distribution includes the estimation the observed statistic went through.
+A replicate whose variance function cannot be fitted, where \code{fitWLS()}
+would fall back to equal weights, counts as a failed replicate: the p-value
+is computed from the replicates that remain, and a warning gives the number
+that failed.
+
+Holding the weights of a \code{fitWLS()} fit fixed, as every call did before
+0.15.0 and \code{reestimate_weights = FALSE} still does, leaves the estimation
+out of the replicates, and the test inherits the error of the tests that
+take the weights as known. In \code{inst/validation/weighted-fits-size.R}, the
+data have standard deviation \eqn{\exp(0.3 x)}{exp(0.3 x)}, the variance
+function is correctly specified, the errors are normal and \code{B = 499}. At
+the 5\% level the test then rejected 0.086 of the time with 150 observations
+and 0.105 with 600 when it held the weights fixed, and 0.0605 and 0.0515
+when it estimated them again. With the true weights it rejected 0.054 and
+0.048. At 2000 replications 0.0605 is 2.2 standard errors above 0.05, and
+outside the release gate's interval, 0.042 to 0.058.
+\code{\link[=performVarianceFormTest]{performVarianceFormTest()}} allows for the estimation too.
+}
+
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)

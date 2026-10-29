@@ -7,7 +7,19 @@
 #'
 #' @param model A fitted [stats::lm] object for which heteroscedasticity is to be
 #'   assessed.
-#' @param data A [base::data.frame] containing the variables used to fit `model`.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default. The
+#'   residuals and weights are read from the fit itself, and `variable` from the
+#'   rows of `data` that hold the observations of the fit. Without `data` it is
+#'   read from the model frame of `model`, which holds it only when it is a
+#'   variable of the model under its own name (`x`, not `log(x)`); a model that
+#'   transforms the variable needs `data`, as does a variable the model does not
+#'   use. Since 0.16.0, data that are given are matched to the observations of
+#'   the fit: rows with row names of their own by name, in any order; rows that
+#'   only number themselves (a tibble, a data.table, a data frame whose row
+#'   names were reset) by the row numbers of the fit, or in the order of the fit
+#'   when they hold one row per observation. The rows the fit dropped may be
+#'   there or not. Data whose rows cannot be shown to hold the observations of
+#'   the fit are refused; see [test_results].
 #' @param variable Character scalar naming the regressor suspected of driving the
 #'   heteroscedasticity. The column must be numeric and strictly positive when
 #'   using the log transformation.
@@ -19,10 +31,11 @@
 #' Park (1966) proposed modelling heteroscedastic variance as
 #' \eqn{\sigma_i^2 = \sigma^2 z_i^{2\gamma}}. Taking logarithms yields the linear
 #' regression \eqn{\log(\hat{e}_i^2) = \alpha + \gamma \log z_i + u_i}. The test
-#' examines whether \eqn{\gamma = 0}. This implementation leverages the shared
-#' validation framework: \link[=rvalidateModelInputs]{rvalidateModelInputs()} checks the fitted model,
-#' \link[=rvalidateDataInputs]{rvalidateDataInputs()} and \link[=rhandleMissingValues]{rhandleMissingValues()} ensure the data contain
-#' the necessary variables, and \link[=rvalidateTestRequirements]{rvalidateTestRequirements()} enforces the
+#' examines whether \eqn{\gamma = 0}. This implementation reads the residuals
+#' and weights from the fit and `variable` from the rows of `data` that hold
+#' its observations (the model context, since 0.16.0):
+#' \link[=rvalidateModelInputs]{rvalidateModelInputs()} checks the fitted model,
+#' and \link[=rvalidateTestRequirements]{rvalidateTestRequirements()} enforces the
 #' positivity constraints required for the logarithmic transformation.
 #'
 #'
@@ -38,7 +51,7 @@
 #' `inst/validation/pass-a-size-power.csv`.
 #' @references
 #' Park, R. E. (1966). Estimation with heteroscedastic error terms. *Econometrica,
-#' 34*(4), 888–898. <https://doi.org/10.2307/1909774>
+#' 34*(4), 888. <https://doi.org/10.2307/1910108>
 #'
 #' Wooldridge, J. M. (2020). *Introductory Econometrics: A Modern Approach*
 #' (7th ed.). Cengage Learning. Section 8.4 reviews the Park test.
@@ -54,29 +67,37 @@
 #' @seealso
 #' [performHarveyTest()] and [performGlejserTest()] offer related parametric
 #' tests based on alternative variance specifications.
-performParkTest <- function(model, data, variable) {
+performParkTest <- function(model, data = NULL, variable) {
   test_label <- "Park test"
+  # The residuals and weights come from the fit; `data`, when given, is matched
+  # to its observations and checked (R/model_context.R). `variable` is read
+  # from the rows of `data` that hold the observations, so data taken in the
+  # order of the fit must tell those rows apart when it is not a column of the
+  # model frame.
+  ctx <- rmodel_context(
+    model, data, fn = "performParkTest", test_label = test_label,
+    reads = if (!missing(variable) && is.character(variable)) variable else character()
+  )
 
   if (!is.character(variable) || length(variable) != 1L || is.na(variable) || !nzchar(variable)) {
     stop("`variable` must be supplied as a single column name.", call. = FALSE)
   }
 
-  rvalidateModelInputs(model, test_name = "Park", min_obs = 10L)
+  rvalidateModelInputs(model, test_name = "Park", min_obs = 10L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_terms <- stats::terms(model)
-  required_vars <- unique(c(all.vars(model_terms), variable))
-
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = test_label,
-    min_obs_model = 10L,
-    min_obs_data = 10L
-  )
-
-  working_data <- prepared$data
-  residuals <- prepared$residuals
+  # The variable, one value per observation in the order of the fit: from the
+  # confirmed rows of `data`, or without `data` from the model frame when it
+  # holds it under its own name (rcontext_variables()).
+  var_vals <- rcontext_variables(ctx, data, c(variable = variable))$variable
+  rwarn_incomplete_rows(data, model, also = variable)
+  # The Pearson residuals of the fit; a fit with a zero weight is refused
+  # there, as before 0.16.0.
+  residuals <- rcontext_pearson(ctx)
+  rstop_missing_variable(ctx, var_vals, variable, "variable", test_label)
+  # The rows of `data` that hold the observations, in the order of the fit,
+  # or the model frame: what the checks below read.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements(
     "park",
@@ -88,9 +109,8 @@ performParkTest <- function(model, data, variable) {
 
   ht_log("INFO", "Running Park test")
 
-  var_vals <- working_data[[variable]]
   if (!is.numeric(var_vals)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = sprintf("Variable '%s' must be numeric to evaluate the Park test", variable)
     )
@@ -100,7 +120,7 @@ performParkTest <- function(model, data, variable) {
   indep <- log(var_vals)
 
   if (any(!is.finite(indep))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = sprintf("Log transformation of '%s' produced non-finite values", variable)
     )

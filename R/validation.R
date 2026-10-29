@@ -5,31 +5,53 @@
 # They centralize error messaging, reduce duplication, and make the
 # validation behaviour of new tests easier to reason about.
 
-.validation_cache <- new.env(parent = emptyenv())
+# The cache keeps the result of each validation under a hash of its inputs, so
+# that validating the same model and data again skips the checks. A simulation
+# validates a new model on every call and never hits it, so the cache holds at
+# most getOption("heteroTests.validation_cache_size", 1000) results and drops
+# the one used least recently (since 0.16.0; from #97 it overwrote the one
+# stored first). It is the store of the caches of results (R/cache.R): the
+# keys are kept in a character vector, not as the names of an environment, as
+# R never frees a name once it has been used as one, so an environment keyed
+# by hash grows by every key it has held, removed or not. A validation whose
+# computation draws random numbers, as the check of normality does on more
+# than `sample_limit` values, is not stored: a later call draws them again,
+# as it would without the cache (rvalidateDistributionalAssumptions(),
+# rvalidateTestRequirements()).
+.validation_cache_max <- 1000L
+.validation_cache <- rcache_new()
+
+.validation_cache_limit <- function() {
+  rcache_limit("heteroTests.validation_cache_size", .validation_cache_max)
+}
+
+.validation_cache_reset <- function() {
+  rcache_clear(.validation_cache)
+}
+
+.validation_cache_size <- function() {
+  rcache_size(.validation_cache)
+}
 
 .validation_cache_enabled <- function() {
-  requireNamespace("digest", quietly = TRUE)
+  .validation_cache_limit() > 0 && requireNamespace("digest", quietly = TRUE)
 }
 
 .validation_cache_key <- function(scope, ...) {
   if (!.validation_cache_enabled()) {
+    # Turned off: what the cache held is dropped too.
+    .validation_cache_reset()
     return(NULL)
   }
-  digest::digest(list(scope = scope, ...), algo = "xxhash64")
+  rcache_hash(list(scope = scope, ...))
 }
 
 .validation_cache_get <- function(key) {
-  if (is.null(key) || !exists(key, envir = .validation_cache, inherits = FALSE)) {
-    return(NULL)
-  }
-  get(key, envir = .validation_cache, inherits = FALSE)
+  rcache_get(.validation_cache, key)
 }
 
 .validation_cache_set <- function(key, value) {
-  if (!is.null(key)) {
-    assign(key, value, envir = .validation_cache)
-  }
-  invisible(value)
+  rcache_put(.validation_cache, key, value, .validation_cache_limit())
 }
 
 #' Reset cached validation results
@@ -38,10 +60,15 @@
 #' their diagnostics. This helper is primarily used in automated tests where
 #' deterministic behaviour is required.
 #'
+#' The cache holds at most `getOption("heteroTests.validation_cache_size",
+#' 1000)` results and drops the one used least recently;
+#' `options(heteroTests.validation_cache_size = 0)` turns it off. A check
+#' that draws random numbers, as the check of normality does on a variable
+#' longer than its `sample_limit`, is not stored.
+#'
 #' @keywords internal
 clearValidationCache <- function() {
-  rm(list = ls(envir = .validation_cache), envir = .validation_cache)
-  invisible(NULL)
+  .validation_cache_reset()
 }
 
 new_validation_result <- function(scope, cache_key = NULL) {
@@ -128,16 +155,37 @@ enforce_integer_scalar <- function(value, arg_name, lower = 0L) {
   as.integer(value)
 }
 
+# What the validations read from the model, for the keys of the validation
+# cache: its class, coefficients, residuals and residual degrees of freedom,
+# and, since 0.16.0, what the R-squared of the fit (rleast_squares_r_squared())
+# and its aliased coefficients are computed from: its fitted values, weights,
+# prior weights, offset, family and link, rank and intercept. Before, two fits
+# with the same coefficients and residuals and other fitted values, such as a
+# fit and the same coefficients on a regressor scaled by 100, shared the
+# result of the check that refuses a fit with an R-squared above 0.999. No
+# validation reads the names of the residuals, which are left out.
 model_signature <- function(model) {
+  part <- function(read) tryCatch(read(), error = function(e) NULL)
+  family <- if (inherits(model, "glm")) part(function() stats::family(model))
   list(
     class = class(model),
-    coefficients = tryCatch(stats::coef(model), error = function(e) NULL),
-    residuals = tryCatch(stats::residuals(model), error = function(e) NULL),
-    df_residual = tryCatch(model$df.residual, error = function(e) NA_real_)
+    coefficients = part(function() stats::coef(model)),
+    residuals = part(function() unname(stats::residuals(model))),
+    df_residual = tryCatch(model$df.residual, error = function(e) NA_real_),
+    fitted = part(function() unname(model$fitted.values)),
+    weights = part(function() unname(model$weights)),
+    prior_weights = part(function() unname(model$prior.weights)),
+    offset = part(function() unname(model$offset)),
+    family = if (!is.null(family)) c(family$family, family$link),
+    rank = part(function() model$rank),
+    intercept = part(function() attr(stats::terms(model), "intercept"))
   )
 }
 
-#' Validate model and data inputs before running diagnostics
+#' Validate model and data inputs before running diagnostics (deprecated)
+#'
+#' Deprecated since 0.14.0: an internal helper of the package, which leaves the
+#' exports in 1.0.0. It still works and warns.
 #'
 #' Provides the compatibility wrapper used by the public testing interface to
 #' ensure that fitted-model objects and their associated data satisfy minimal
@@ -189,10 +237,18 @@ model_signature <- function(model) {
 #' validateTestInputs(outlier_fit, noisy, "white")
 #' }
 #'
-#' @seealso [checkModel()], [checkModelEnhanced()], [rvalidateModelInputs()],
+#' @seealso [checkModel()], [rvalidateModelInputs()],
 #'   [rvalidateTestRequirements()]
 #' @export
 validateTestInputs <- function(model, data, test_name, min_obs = 10) {
+  .Deprecated(old = "validateTestInputs", msg = .ht_internal_deprecation("validateTestInputs"))
+  .validate_test_inputs(model, data, test_name, min_obs)
+}
+
+# `allow_aliased = TRUE` leaves a rank-deficient fit to the test that is run
+# next, which accepts it or refuses it with its own message: test_factory
+# runs tests that validate their model themselves.
+.validate_test_inputs <- function(model, data, test_name, min_obs = 10, allow_aliased = FALSE) {
   test_name <- enforce_character_scalar(test_name, "test_name", example = "\"white\"")
   min_obs <- enforce_integer_scalar(min_obs, "min_obs", lower = 0L)
 
@@ -203,7 +259,9 @@ validateTestInputs <- function(model, data, test_name, min_obs = 10) {
     min_obs = min_obs,
     context = sprintf("data supplied to %s", test_name)
   )
-  model_result <- validate_model_inputs_internal(model, data, test_name, min_obs)
+  model_result <- validate_model_inputs_internal(
+    model, data, test_name, min_obs, allow_aliased = allow_aliased
+  )
 
   combined <- validation_merge(base_result, data_result, model_result)
 
@@ -223,7 +281,10 @@ validateTestInputs <- function(model, data, test_name, min_obs = 10) {
   invisible(TRUE)
 }
 
-#' Enhanced model diagnostics
+#' Enhanced model diagnostics (deprecated)
+#'
+#' Deprecated since 0.14.0: use `checkModel(model, data, enhanced = TRUE)`,
+#' which runs the same checks. This name still works and warns.
 #'
 #' Extends [checkModel()] with additional soft checks that flag potential
 #' numerical issues before computationally expensive diagnostics are executed.
@@ -249,12 +310,17 @@ validateTestInputs <- function(model, data, test_name, min_obs = 10) {
 #' @examples
 #' data(mtcars)
 #' fit <- stats::lm(mpg ~ wt + hp, data = mtcars)
-#' checkModelEnhanced(fit)
+#' checkModel(fit, enhanced = TRUE)
 #'
 #' @seealso [checkModel()], [performVIFDiagnostic()], [validateTestInputs()]
 #' @export
 checkModelEnhanced <- function(model, data = NULL) {
-  checkModel(model)
+  .Deprecated("checkModel(model, data, enhanced = TRUE)", old = "checkModelEnhanced")
+  checkModel(model, data, enhanced = TRUE)
+}
+
+# The soft checks behind checkModel(enhanced = TRUE).
+.check_model_soft <- function(model, data = NULL) {
 
   df_resid <- tryCatch(model$df.residual, error = function(e) NA_real_)
   if (is.finite(df_resid) && df_resid <= 5) {
@@ -265,7 +331,10 @@ checkModelEnhanced <- function(model, data = NULL) {
   }
 
   if (inherits(model, "lm")) {
-    r_sq <- tryCatch(summary(model)$r.squared, error = function(e) NA_real_)
+    # The R-squared of the least-squares fit, which summary() of a glm does
+    # not report: on a glm this stopped with "missing value where TRUE/FALSE
+    # needed" before 0.16.0.
+    r_sq <- rleast_squares_r_squared(model)
     if (is.finite(r_sq) && r_sq > 0.999) {
       warning(
         "Near-perfect fit detected - heteroscedasticity tests may be unreliable",
@@ -284,13 +353,15 @@ checkModelEnhanced <- function(model, data = NULL) {
   invisible(model)
 }
 
-validate_model_inputs_internal <- function(model, data, test_name, min_obs) {
+validate_model_inputs_internal <- function(model, data, test_name, min_obs,
+                                           allow_aliased = FALSE) {
   cache_key <- .validation_cache_key(
     "model_inputs",
     test = test_name,
     min_obs = min_obs,
     model = model_signature(model),
-    data_rows = if (is.data.frame(data)) nrow(data) else NULL
+    data_rows = if (is.data.frame(data)) nrow(data) else NULL,
+    allow_aliased = isTRUE(allow_aliased)
   )
   cached <- .validation_cache_get(cache_key)
   if (!is.null(cached)) {
@@ -303,11 +374,8 @@ validate_model_inputs_internal <- function(model, data, test_name, min_obs) {
 
   if (!inherits(model, c("lm", "glm"))) {
     model_class <- paste(class(model), collapse = "/")
-    message <- sprintf(
-      "Provide an object fitted with stats::lm() or stats::glm() before running %s (received class: %s).",
-      test_name,
-      model_class
-    )
+    # The message the tests give for such a model (rrefuse_model_class()).
+    message <- rmodel_class_message(model, test_name)
     result <- validation_add_error(result, message, "model_class", model_class)
     return(.validation_cache_set(cache_key, result))
   }
@@ -322,12 +390,23 @@ validate_model_inputs_internal <- function(model, data, test_name, min_obs) {
     return(.validation_cache_set(cache_key, result))
   }
   if (!all(is.finite(coefs))) {
-    message <- sprintf(
-      "Model coefficients must be finite before running %s. Check for NA or infinite estimates.",
-      test_name
-    )
-    result <- validation_add_error(result, message)
-    return(.validation_cache_set(cache_key, result))
+    # A rank-deficient fit leaves the coefficients of its aliased columns NA.
+    # A test that is computed on the estimable part of the design accepts it
+    # (allow_aliased = TRUE); the others refuse it with a message that names
+    # them. Any other coefficient that is not finite is refused by all.
+    aliased <- raliased_coefficients(model)
+    only_aliased <- length(aliased) > 0L &&
+      all(is.finite(coefs[!names(coefs) %in% aliased]))
+    if (!only_aliased) {
+      result <- validation_add_error(result, rnonfinite_coefficients_message(test_name))
+      return(.validation_cache_set(cache_key, result))
+    }
+    if (!isTRUE(allow_aliased)) {
+      message <- tryCatch(rstop_aliased(aliased, test_name), error = conditionMessage)
+      result <- validation_add_error(result, message)
+      return(.validation_cache_set(cache_key, result))
+    }
+    result <- validation_add_detail(result, "aliased", aliased)
   }
   result <- validation_add_detail(result, "coefficients", coefs)
 
@@ -351,7 +430,8 @@ validate_model_inputs_internal <- function(model, data, test_name, min_obs) {
     )
     return(.validation_cache_set(cache_key, result))
   }
-  result <- validation_add_detail(result, "residuals", resid)
+  # The residuals are not kept in the result: it is cached, and they would hold
+  # a vector as long as the data in every entry. Nothing read them.
 
   n_obs <- length(resid)
   result <- validation_add_detail(result, "n_obs", n_obs)
@@ -414,7 +494,10 @@ validate_model_inputs_internal <- function(model, data, test_name, min_obs) {
   }
 
   if (inherits(model, "lm")) {
-    r_sq <- tryCatch(summary(model)$r.squared, error = function(e) NA_real_)
+    # The R-squared of the least-squares fit: for a Gaussian glm with the
+    # identity link, that of the lm, which summary() of a glm does not report.
+    # Before 0.16.0 such a glm escaped this refusal.
+    r_sq <- rleast_squares_r_squared(model)
     if (isTRUE(is.finite(r_sq) && r_sq > 0.999)) {
       message <- sprintf(
         "Model appears perfectly explained (R\u00b2 = %.3f). Heteroscedasticity diagnostics are unreliable for a perfect fit.",
@@ -438,7 +521,13 @@ validate_data_inputs_internal <- function(data, required_vars, min_obs, context)
       min_obs = min_obs,
       columns = names(data),
       n_rows = nrow(data),
-      required = sort(unique(as.character(required_vars)))
+      # The names as the checks read them: in their order, which the message
+      # on the missing ones keeps, NA and "" included, and NULL apart from
+      # character(0). Before 0.16.0 they were sorted, which drops NA, so a
+      # call with `required_vars = NA`, refused, stored its refusal under the
+      # key of `required_vars = NULL`, and later calls on the same columns
+      # were refused with "missing from input data: NA".
+      required = if (!is.null(required_vars)) unique(as.character(required_vars))
     )
   } else {
     NULL
@@ -523,13 +612,20 @@ validate_data_inputs_internal <- function(data, required_vars, min_obs, context)
 #'   reference the calling test.
 #' @param min_obs Minimum number of observations required for the calling
 #'   procedure. Defaults to `10`.
+#' @param allow_aliased Logical. `FALSE`, the default, refuses a rank-deficient
+#'   fit, whose aliased coefficients are `NA`, with a message that names them;
+#'   `TRUE` accepts it, for a procedure computed on the estimable part of the
+#'   design. A coefficient that is not finite for another reason is refused
+#'   either way.
 #' @return Invisibly returns `model` when validation passes.
 #' @keywords internal
-rvalidateModelInputs <- function(model, test_name, min_obs = 10) {
+rvalidateModelInputs <- function(model, test_name, min_obs = 10, allow_aliased = FALSE) {
   test_name <- enforce_character_scalar(test_name, "test_name", example = "\"white\"")
   min_obs <- enforce_integer_scalar(min_obs, "min_obs", lower = 1L)
 
-  result <- validate_model_inputs_internal(model, NULL, test_name, min_obs)
+  result <- validate_model_inputs_internal(
+    model, NULL, test_name, min_obs, allow_aliased = allow_aliased
+  )
   rprocessValidationResult(result)
   invisible(model)
 }
@@ -578,7 +674,7 @@ rvalidateDataInputs <- function(data, required_vars = NULL, min_obs = 10) {
 #' @keywords internal
 rhandleMissingValues <- function(data, variables, strategy = "complete_cases") {
   if (!is.data.frame(data)) {
-    std_error("invalid_data")
+    .std_error("invalid_data")
   }
 
   if (missing(variables) || is.null(variables) || length(variables) == 0) {
@@ -588,7 +684,7 @@ rhandleMissingValues <- function(data, variables, strategy = "complete_cases") {
 
   missing_vars <- setdiff(variables, names(data))
   if (length(missing_vars) > 0) {
-    std_error("missing_variable", variable = paste(missing_vars, collapse = ", "))
+    .std_error("missing_variable", variable = paste(missing_vars, collapse = ", "))
   }
 
   strategy <- match.arg(strategy, c("complete_cases", "fail", "warn"))
@@ -617,7 +713,7 @@ rhandleMissingValues <- function(data, variables, strategy = "complete_cases") {
   }
 
   if (strategy == "fail") {
-    std_error("missing_values_detected", var_names = var_names, n_removed = n_removed)
+    .std_error("missing_values_detected", var_names = var_names, n_removed = n_removed)
   }
 
   cleaned <- data[complete_mask, , drop = FALSE]
@@ -634,7 +730,7 @@ rhandleMissingValues <- function(data, variables, strategy = "complete_cases") {
     n_removed = n_removed
   )
 
-  std_warning("missing_values_removed", var_names = var_names, n_removed = n_removed)
+  .std_warning("missing_values_removed", var_names = var_names, n_removed = n_removed)
 
   list(
     data = cleaned,
@@ -897,7 +993,7 @@ check_outlier_assumption <- function(data, config, numeric_columns) {
 #' @keywords internal
 rvalidateDistributionalAssumptions <- function(data, assumptions = list()) {
   if (!is.data.frame(data)) {
-    std_error("invalid_data")
+    .std_error("invalid_data")
   }
 
   if (is.null(assumptions)) {
@@ -920,6 +1016,7 @@ rvalidateDistributionalAssumptions <- function(data, assumptions = list()) {
     return(cached)
   }
 
+  rng_before <- rrng_state()
   numeric_columns <- names(data)[vapply(data, is.numeric, logical(1))]
   result <- new_validation_result("distributional_assumptions", cache_key)
 
@@ -943,6 +1040,13 @@ rvalidateDistributionalAssumptions <- function(data, assumptions = list()) {
     result <- validation_merge(result, outlier_result)
   }
 
+  # The check of normality tests a random sample of `sample_limit` values of
+  # a longer variable: such a result is not stored, so that a later call
+  # draws its sample, as it would without the cache. Before 0.16.0 it was, and
+  # the call that read it drew no random numbers.
+  if (!identical(rng_before, rrng_state())) {
+    return(result)
+  }
   .validation_cache_set(cache_key, result)
 }
 
@@ -963,7 +1067,7 @@ rvalidateDistributionalAssumptions <- function(data, assumptions = list()) {
 #' @keywords internal
 rvalidateGroupingVariable <- function(data, group_var, min_group_size = 3, min_groups = 2) {
   if (!is.data.frame(data)) {
-    std_error("invalid_data")
+    .std_error("invalid_data")
   }
 
   if (missing(group_var) || length(group_var) != 1L) {
@@ -973,7 +1077,7 @@ rvalidateGroupingVariable <- function(data, group_var, min_group_size = 3, min_g
   group_var <- as.character(group_var)
 
   if (!group_var %in% names(data)) {
-    std_error("missing_variable", variable = group_var)
+    .std_error("missing_variable", variable = group_var)
   }
 
   min_group_size <- enforce_integer_scalar(min_group_size, "min_group_size", lower = 1L)
@@ -1068,6 +1172,9 @@ rvalidateGroupingVariable <- function(data, group_var, min_group_size = 3, min_g
 #'
 #' @inheritParams performWhiteTest
 #' @inheritParams rvalidateTestRequirements
+#' @param data A [base::data.frame] (or object coercible to one) containing the
+#'   variables referenced by `model`. It must include the observations used to
+#'   fit `model` and will be checked for missing values.
 #' @param groups Optional grouping vector used for per-group requirements. If
 #'   omitted, the function attempts to derive the grouping variable from
 #'   `...` when `group_var` is supplied.
@@ -1088,7 +1195,8 @@ rvalidateSampleSize <- function(test_name, model = NULL, data = NULL, groups = N
 
   cache_key <- .validation_cache_key(
     "sample_size",
-    test = test_key,
+    # As given, not test_key: the messages name it so.
+    test = test_name,
     model = model_signature(model),
     data = if (!is.null(data)) data else NULL,
     groups = if (!is.null(groups)) groups else NULL,
@@ -1269,13 +1377,14 @@ rvalidateSampleSize <- function(test_name, model = NULL, data = NULL, groups = N
 rvalidateTestRequirements <- function(test_name, model, data, ...) {
   test_name <- enforce_character_scalar(test_name, "test_name", example = "\"Bartlett\"")
   if (!is.data.frame(data)) {
-    std_error("invalid_data")
+    .std_error("invalid_data")
   }
 
   extra <- list(...)
   cache_key <- .validation_cache_key(
     "test_requirements",
-    test = tolower(trimws(test_name)),
+    # As given, not in lower case: the result and its messages name it so.
+    test = test_name,
     model = model_signature(model),
     data = data,
     extra = extra
@@ -1285,6 +1394,7 @@ rvalidateTestRequirements <- function(test_name, model, data, ...) {
     return(cached)
   }
 
+  rng_before <- rrng_state()
   result <- new_validation_result("test_requirements", cache_key)
   result <- validation_add_detail(result, "test_name", test_name)
 
@@ -1399,6 +1509,11 @@ rvalidateTestRequirements <- function(test_name, model, data, ...) {
     result <- validation_merge(result, assumptions_result)
   }
 
+  # The check of normality drew random numbers (a sample of more than
+  # `sample_limit` values): not stored, so that a later call draws them again.
+  if (!identical(rng_before, rrng_state())) {
+    return(result)
+  }
   .validation_cache_set(cache_key, result)
 }
 

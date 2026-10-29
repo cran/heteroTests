@@ -11,10 +11,11 @@
 # single data-generating process will not do. Each test is driven by the null
 # and alternative appropriate to what it actually tests: heteroscedasticity for
 # the variance diagnostics, ARCH errors for the time-series ones, an omitted
-# quadratic for RESET, a random intercept for the random-effects LM test, and a
-# common time factor for the cross-sectional dependence test. Reading a
-# rejection rate as "power" only makes sense against that test's own
-# alternative.
+# quadratic for RESET, a random intercept for the random-effects LM test, a
+# common time factor for the cross-sectional dependence test, and a variance
+# function of the wrong shape for the variance-form test, whose null is itself
+# heteroscedastic. Reading a rejection rate as "power" only makes sense against
+# that test's own alternative.
 
 is_source_checkout <- file.exists("DESCRIPTION") &&
   any(grepl(
@@ -144,7 +145,15 @@ FAMILIES <- list(
                 alt_label = "omitted quadratic"),
   spatial = list(null = function() make_spatial(FALSE),
                  alt  = function() make_spatial(TRUE),
-                 alt_label = "variance clustered in space")
+                 alt_label = "variance clustered in space"),
+  # The null of performVarianceFormTest() is a variance function, not constant
+  # variance. Under this null the log-variance is linear in x, the exponential
+  # form the test assumes by default; under the alternative it is quadratic in
+  # x. inst/validation/variance-form-size-power.R covers the other forms,
+  # sample sizes and heavy tails.
+  variance_form = list(null = function() make_xs(function(x) exp(0.4 * x)),
+                       alt  = function() make_xs(function(x) exp(0.25 * (x - 3)^2)),
+                       alt_label = "log-variance quadratic in x")
 )
 
 # --- how each exported test is invoked --------------------------------------
@@ -153,12 +162,20 @@ TESTS <- list(
   list("performCookWeisbergTest", "hetero", function(o) performCookWeisbergTest(o$model)),
   list("performDavidianCarrollTest", "hetero", function(o) performDavidianCarrollTest(o$model)),
   list("performHarveyTest", "hetero", function(o) performHarveyTest(o$model)),
-  list("performNCVTest", "hetero", function(o) performNCVTest(o$model)),
+  # performNCVTest() is deprecated in 0.14.0; performCookWeisbergTest()
+  # returns the same statistic and p-value, so the row keeps its numbers.
+  list("performNCVTest", "hetero", function(o) performCookWeisbergTest(o$model)),
   list("performSpearmanTest", "hetero", function(o) performSpearmanTest(o$model)),
   list("performSpreadLevelTest", "hetero", function(o) performSpreadLevelTest(o$model)),
   list("performBPTest", "hetero", function(o) performBPTest(o$model, o$data)),
-  list("performBreuschPaganTest", "hetero", function(o) performBreuschPaganTest(o$model, o$data)),
+  # performBreuschPaganTest() was performBPTest() under a second name, and
+  # 0.14.0 deprecated it. The row keeps the shape of the CSV and the tables,
+  # and calls the function the old name now forwards to.
+  list("performBreuschPaganTest", "hetero", function(o) performBPTest(o$model, o$data)),
   list("performKoenkerTest", "hetero", function(o) performKoenkerTest(o$model, o$data)),
+  # performStudentizedBPTest() is deprecated in 0.14.0 and keeps its own
+  # implementation. The row measures that function, whose warning the
+  # suppressWarnings() around each call silences.
   list("performStudentizedBPTest", "hetero", function(o) performStudentizedBPTest(o$model, o$data)),
   list("performWhiteTest", "hetero", function(o) performWhiteTest(o$model, o$data)),
   list("performQuantileRegressionTest", "hetero", function(o) performQuantileRegressionTest(o$model, o$data)),
@@ -172,6 +189,8 @@ TESTS <- list(
   list("performLeveneTest", "hetero", function(o) performLeveneTest(o$model, o$data, "g")),
   list("performOBrienTest", "hetero", function(o) performOBrienTest(o$model, o$data, "g")),
   list("performBoxMTest", "hetero", function(o) performBoxMTest(o$data[, c("y", "x")], o$data$g)),
+  # The default, robust = TRUE since 0.15.0. The row was regenerated then from
+  # these seeds; with robust = FALSE the same run gives the row of 0.14.0.
   list("performGlejserTest", "hetero", function(o) performGlejserTest(o$model, o$data, "x")),
   list("performParkTest", "hetero", function(o) performParkTest(o$model, o$data, "x")),
   list("performGQTest", "hetero", function(o) performGQTest(o$model, o$data, "x")),
@@ -184,7 +203,9 @@ TESTS <- list(
   list("performPesaranTest", "csdep",
        function(o) performPesaranTest(o$model, o$data, "id", "time")),
   list("performSpatialHeteroTest", "spatial",
-       function(o) performSpatialHeteroTest(o$model, o$data, o$listw))
+       function(o) performSpatialHeteroTest(o$model, o$data, o$listw)),
+  list("performVarianceFormTest", "variance_form",
+       function(o) performVarianceFormTest(o$model))
 )
 
 pval <- function(fn, o) {

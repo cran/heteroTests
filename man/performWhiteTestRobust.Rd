@@ -6,10 +6,10 @@
 \usage{
 performWhiteTestRobust(
   model,
-  data,
+  data = NULL,
   method = c("standard", "reduced"),
   bootstrap = FALSE,
-  B = 1000,
+  B = 999,
   ci_level = 0.95,
   parallel = FALSE
 )
@@ -20,21 +20,35 @@ to be diagnosed.}
 
 \item{data}{A \link[base:data.frame]{base::data.frame} (or object coercible to one) containing the
 variables referenced by \code{model}. It must include the observations used to
-fit \code{model} and will be checked for missing values.}
+fit \code{model} and will be checked for missing values.
+When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
+terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
+a model that transforms a variable needs \code{data}, as does a
+model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
+argument is a column of the data, which the model frame holds as
+\code{(weights)} or \code{(offset)}.}
 
 \item{method}{Character string selecting the auxiliary specification.
 "standard" retains squares and cross-products, while "reduced"
 excludes cross-products for high-dimensional designs.}
 
 \item{bootstrap}{Logical, compute bootstrap diagnostics for the
-statistic and p-value?}
+statistic and p-value? The bootstrap is \code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}}, so on
+a fit returned by \code{\link[=fitWLS]{fitWLS()}} each replicate estimates the weights again,
+its default since 0.15.0. There is no argument to hold them fixed here;
+\code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}} with \code{reestimate_weights = FALSE} does that.}
 
-\item{B}{Number of bootstrap replications when \code{bootstrap = TRUE}.}
+\item{B}{Number of bootstrap replications when \code{bootstrap = TRUE}.
+Defaults to 999, at which a bootstrap p-value of the form
+\verb{(1 + #) / (B + 1)} gives an exact test at the 5\% and 1\% levels; it was
+1000 before 0.15.0. The value is recorded in \code{robust_details$bootstrap$B}
+whether or not the bootstrap runs.}
 
 \item{ci_level}{Confidence level for reported intervals.}
 
 \item{parallel}{Logical, allow parallel bootstrap evaluation when the
-\code{parallel} package is available.}
+\code{parallel} package is available. A seeded call gives the same result
+each time; see \emph{Parallel replicates} in \code{\link[=bootstrapTestStatistic]{bootstrapTestStatistic()}}.}
 }
 \value{
 An object of class \code{htest} augmented with a
@@ -50,6 +64,15 @@ Provides enriched inference around the White test by combining bootstrap
 resampling (Efron & Tibshirani, 1993) with asymptotic approximations. The
 \code{robust_details} element summarises interval estimates, effect sizes, and power
 calculations to aid decision-making.
+}
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)

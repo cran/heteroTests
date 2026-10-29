@@ -6,7 +6,7 @@
 \usage{
 performHighDimensionalTest(
   model,
-  data,
+  data = NULL,
   variance_threshold = 0.9,
   max_components = NULL
 )
@@ -15,9 +15,18 @@ performHighDimensionalTest(
 \item{model}{A fitted \link[stats:lm]{stats::lm} object describing the mean structure whose
 residual variance is to be assessed.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} (or compatible object) containing the
-variables referenced in \code{model}. The data must include all observations used
-to fit \code{model} and should not contain unresolved missing values.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design, weights and offset are read from the fit itself, so
+a model that transforms its variables, has an \code{offset()} term, or takes
+its \code{weights} or \code{offset} from a column of the data needs no \code{data}, and
+the model frame of \code{model} is accepted as \code{data} (since 0.16.0; before,
+such models needed \code{data}). Data that are given are matched to the
+observations of the fit: rows with row names of their own by name, in any
+order; rows that only number themselves (a tibble, a data.table, a data
+frame whose row names were reset) by the row numbers of the fit, or in the
+order of the fit when they hold one row per observation. The rows the fit
+dropped may be there or not. Data whose rows cannot be shown to hold the
+observations of the fit are refused; see \link{test_results}.}
 
 \item{variance_threshold}{Proportion of predictor variance that the selected
 principal components should explain. Defaults to 0.9.}
@@ -34,6 +43,15 @@ Applies principal component projections to the design matrix and evaluates a
 Breusch-Pagan style statistic on the reduced representation. The procedure is
 designed for settings where the number of predictors rivals or exceeds the
 sample size.
+}
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 set.seed(123)

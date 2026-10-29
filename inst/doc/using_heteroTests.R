@@ -1,5 +1,7 @@
 ## ----setup, include=FALSE-----------------------------------------------------
 knitr::opts_chunk$set(collapse = TRUE, comment = "#")
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 
 ## ----example------------------------------------------------------------------
 library(heteroTests)
@@ -33,7 +35,7 @@ performArchLMTest(model, lags = 2)
 # Alternatively run multiple tests at once
 runHeteroTests(model, quakes)
 # Choose a subset of diagnostics
-runHeteroTests(model, quakes, tests = c("white", "koenker", "ncv"))
+runHeteroTests(model, quakes, tests = c("white", "koenker", "cook_weisberg"))
 runDiagnostics(model, quakes)
 
 ## ----remediation--------------------------------------------------------------
@@ -54,12 +56,12 @@ plot(HeteroDiagnostic(dose_model, Theoph))
 
 ## ----step-by-step-------------------------------------------------------------
 hd <- HeteroDiagnostic(stations ~ mag + depth, quakes)
-test(hd)
+runDiagnostics(hd$model, hd$data)
 
 wls_model <- fitWLS(hd$model)
 
 # Re-test after remedy
-test(HeteroDiagnostic(wls_model, quakes))
+runDiagnostics(wls_model, quakes)
 
 ## ----validation-example-------------------------------------------------------
 # Compare our Breusch-Pagan test with lmtest
@@ -68,7 +70,7 @@ data(mtcars)
 model <- lm(mpg ~ wt + hp, data = mtcars)
 
 # Our implementation
-our_result <- performBreuschPaganTest(model, mtcars)
+our_result <- performBPTest(model, mtcars)
 
 # Reference implementation
 ref_result <- bptest(model)

@@ -256,6 +256,31 @@ test_that("test factory handles errors gracefully", {
   )
 })
 
+test_that("the factory's Szroeter test asks for its ordering and passes it on", {
+  skip_if_not_installed("R6")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  model <- stats::lm(mpg ~ wt + qsec, data = mtcars)
+  # Without `order_by` it refuses the call and says how to give it, since
+  # 0.16.0; before, it stopped with "argument "order_by" is missing, with no
+  # default". It orders by nothing of its own.
+  expect_error(
+    test_factory$run_test("szroeter", model, mtcars),
+    "The Szroeter test needs `order_by`, the column of `data` that orders the observations",
+    fixed = TRUE
+  )
+  # With it, the entry is performSzroeterTest(), by name or by position.
+  direct <- performSzroeterTest(model, mtcars, order_by = "wt", alternative = "two.sided")
+  for (result in list(
+    test_factory$run_test("szroeter", model, mtcars, order_by = "wt", alternative = "two.sided"),
+    test_factory$run_test("szroeter", model, mtcars, "wt", "two.sided")
+  )) {
+    expect_identical(result$test_metadata$description, "Heteroscedasticity test: szroeter")
+    result$test_metadata <- NULL
+    expect_identical(result, direct)
+  }
+})
+
 # Registry Consistency
 # =============================================================================
 
@@ -341,4 +366,52 @@ test_that("registry modifications are persistent within session", {
   result <- runHeteroTests(test_obj$model, test_obj$data, tests = "persistent_test")
   expect_htest(result$persistent_test)
   expect_equal(result$persistent_test$statistic, 99)
+})
+
+test_that("listDiagnostics() returns the registered names, sorted", {
+  built_in <- c(
+    "box_m", "breusch_pagan", "cook_weisberg", "high_dimensional", "koenker",
+    "ncv", "quantile_regression", "rank_permutation", "spatial_hetero",
+    "spread_level", "student_bp", "szroeter", "variance_form", "white",
+    "white_bootstrap", "wild_bootstrap"
+  )
+  listed <- listDiagnostics()
+
+  expect_type(listed, "character")
+  expect_identical(listed, sort(listed))
+  expect_true(all(built_in %in% listed))
+  # Exactly the names runHeteroTests() checks `tests` against. Other tests in
+  # this file register diagnostics of their own, so the list can be longer
+  # than the built-in one.
+  expect_setequal(listed, names(as.list(heteroTests:::.diagnostic_registry)))
+})
+
+test_that("a diagnostic added with registerDiagnostic() is listed and runs", {
+  name <- "listed_custom_diagnostic"
+  on.exit(
+    rm(list = name, envir = heteroTests:::.diagnostic_registry),
+    add = TRUE
+  )
+  expect_false(name %in% listDiagnostics())
+
+  registerDiagnostic(name, function(model, data) {
+    structure(
+      list(statistic = c(X = 1), p.value = 0.5, method = "Listed"),
+      class = "htest"
+    )
+  })
+  expect_true(name %in% listDiagnostics())
+
+  m <- lm(mpg ~ wt, data = mtcars)
+  res <- runHeteroTests(m, mtcars, tests = name, use_cache = FALSE)
+  expect_equal(res[[name]]$method, "Listed")
+})
+
+test_that("runHeteroTests() points to listDiagnostics() for an unknown name", {
+  m <- lm(mpg ~ wt, data = mtcars)
+  expect_error(
+    runHeteroTests(m, mtcars, tests = c("white", "bogus")),
+    "Unknown tests: bogus. listDiagnostics() returns the registered names.",
+    fixed = TRUE
+  )
 })

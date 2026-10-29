@@ -3,16 +3,31 @@
 #' Generates a simple scatter plot of residuals against fitted values from a
 #' linear model. A horizontal reference line at zero is added.
 #'
+#' For a weighted fit the Pearson residuals \eqn{\sqrt{w_i}\, e_i} are plotted,
+#' as in `plot.lm()`: those are the residuals that have constant variance when
+#' the weights are right. The other residual plots in the package do the same.
+#'
+#' With `enhanced = TRUE` the plot marks influential observations (Cook's
+#' distance above \eqn{4/n}) in red, sizes the points by the absolute
+#' residual and adds the standard-error band of the LOESS smooth. This is what
+#' the deprecated `plotResidualsFittedEnhanced()` drew.
+#'
 #' @param model A fitted model of class `lm`.
+#' @param enhanced Logical. `FALSE`, the default, draws the simple plot;
+#'   `TRUE` the plot with influential observations marked.
 #'
 #' @return A \code{ggplot} object.
 #' @examples
 #' data(mtcars)
 #' m <- lm(mpg ~ wt + qsec, data = mtcars)
 #' plotResidualsFitted(m)
-plotResidualsFitted <- function(model) {
+#' plotResidualsFitted(m, enhanced = TRUE)
+plotResidualsFitted <- function(model, enhanced = FALSE) {
   checkModel(model)
-  df <- data.frame(fitted = fitted(model), resid = residuals(model))
+  if (isTRUE(enhanced)) {
+    return(.plot_residuals_fitted_enhanced(model))
+  }
+  df <- data.frame(fitted = fitted(model), resid = rpearson_residuals(model))
   ggplot2::ggplot(df, ggplot2::aes(fitted, resid)) +
     ggplot2::geom_point() +
     ggplot2::geom_smooth(method = "loess", se = FALSE, color = "blue") +
@@ -40,7 +55,7 @@ plotSpreadLevel <- function(model) {
   checkModel(model)
   df <- data.frame(
     fitted = fitted(model),
-    res_sqrt = sqrt(abs(residuals(model)))
+    res_sqrt = sqrt(abs(rpearson_residuals(model)))
   )
   ggplot2::ggplot(df, ggplot2::aes(fitted, res_sqrt)) +
     ggplot2::geom_point() +
@@ -58,6 +73,8 @@ plotSpreadLevel <- function(model) {
 #' to help visually assess heteroscedastic patterns.
 #'
 #' @param model A fitted model of class `lm`.
+#' @param enhanced Logical, passed to [plotResidualsFitted()]. `TRUE` returns
+#'   what the deprecated `plotDiagnosticSuiteEnhanced()` returned.
 #'
 #' @return A list with elements `residuals_fitted` and `spread_level`, each a
 #'   \code{ggplot} object.
@@ -66,10 +83,10 @@ plotSpreadLevel <- function(model) {
 #' m <- lm(mpg ~ wt + qsec, data = mtcars)
 #' plots <- plotDiagnosticSuite(m)
 #' plots$residuals_fitted
-plotDiagnosticSuite <- function(model) {
+plotDiagnosticSuite <- function(model, enhanced = FALSE) {
   checkModel(model)
   list(
-    residuals_fitted = plotResidualsFitted(model),
+    residuals_fitted = plotResidualsFitted(model, enhanced = enhanced),
     spread_level = plotSpreadLevel(model),
     density = plotResidualDensity(model),
     qq = plotResidualQQ(model),
@@ -80,13 +97,29 @@ plotDiagnosticSuite <- function(model) {
 
 #' Compare residuals before and after remediation
 #'
-#' Overlays residuals of two models on a single plot to visualise improvement
-#' after applying a remediation method (e.g. WLS or robust regression).
+#' Draws the residuals of two models against their fitted values in two panels,
+#' side by side, to show what a remediation method (a weighted fit, a
+#' transformation) did to the spread.
+#'
+#' A weighted fit is shown through its Pearson residuals \eqn{\sqrt{w_i}\, e_i},
+#' so the plot shows whether the weighting flattened the spread. Its raw
+#' residuals would look as heteroscedastic as the original ones however good
+#' the weights were.
+#'
+#' Each panel has its own axes. Weighted residuals and the residuals of a
+#' transformed response are not in the units of the original ones, and on a
+#' common axis one of the two panels could be squeezed flat. The panels are
+#' there to compare the shape of the two clouds, not their size.
 #'
 #' @param original The original `lm` or `glm` model.
 #' @param remedied The model fitted after remediation.
 #'
-#' @return A `ggplot` object with residuals of both models.
+#' @return A `ggplot` object with one panel per model. Its data have the
+#'   columns `fitted`, `resid`, `model` (`"original"` or `"remedied"`) and
+#'   `panel`.
+#' @section Earlier versions:
+#' Up to 0.12.0 the two sets of residuals were overlaid in one panel and told
+#' apart by colour.
 #' @examples
 #' data(mtcars)
 #' m1 <- lm(mpg ~ wt, data = mtcars)
@@ -95,24 +128,39 @@ plotDiagnosticSuite <- function(model) {
 plotBeforeAfter <- function(original, remedied) {
   checkModel(original)
   checkModel(remedied)
+  resid_original <- rpearson_residuals(original)
+  resid_remedied <- rpearson_residuals(remedied)
+  # The prior weights of an lm or of a Gaussian glm, whose residuals are
+  # weighted too; before 0.16.0 a weighted Gaussian glm was not labelled.
+  panel_label <- function(model, label) {
+    if (is.null(rleast_squares_weights(model))) label else paste0(label, " (weighted residuals)")
+  }
+  labels <- c(
+    original = panel_label(original, "Original"),
+    remedied = panel_label(remedied, "Remedied")
+  )
+  model <- rep(
+    c("original", "remedied"),
+    c(length(resid_original), length(resid_remedied))
+  )
   df <- data.frame(
     fitted = c(fitted(original), fitted(remedied)),
-    resid = c(residuals(original), residuals(remedied)),
-    model = rep(
-      c("original", "remedied"),
-      c(length(residuals(original)), length(residuals(remedied)))
-    )
+    resid = c(resid_original, resid_remedied),
+    model = model,
+    panel = factor(labels[model], levels = unname(labels))
   )
-  ggplot2::ggplot(df, ggplot2::aes(fitted, resid, colour = model)) +
-    ggplot2::geom_point(alpha = 0.6) +
-    ggplot2::geom_smooth(method = "loess", se = FALSE) +
-    ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
+  ggplot2::ggplot(df, ggplot2::aes(fitted, resid)) +
+    ggplot2::geom_hline(yintercept = 0, colour = "#8c8c8c", linewidth = 0.3) +
+    ggplot2::geom_point(colour = .ht_palette[1], alpha = 0.5, size = 1.3) +
+    ggplot2::geom_smooth(
+      method = "loess", formula = y ~ x, se = FALSE,
+      colour = "#333333", linewidth = 0.7
+    ) +
+    ggplot2::facet_wrap(~panel, nrow = 1, scales = "free") +
     ggplot2::labs(
       x = "Fitted values", y = "Residuals",
-      title = "Before/After Residual Comparison",
-      colour = "Model"
+      title = "Before/After Residual Comparison"
     ) +
-    scale_colour_hetero_diagnostic() +
     theme_hetero()
 }
 
@@ -129,7 +177,7 @@ plotBeforeAfter <- function(original, remedied) {
 #' plotResidualDensity(m)
 plotResidualDensity <- function(model) {
   checkModel(model)
-  df <- data.frame(resid = residuals(model))
+  df <- data.frame(resid = rpearson_residuals(model))
   ggplot2::ggplot(df, ggplot2::aes(resid)) +
     ggplot2::geom_density(fill = "lightblue", alpha = 0.5) +
     ggplot2::labs(
@@ -152,7 +200,7 @@ plotResidualDensity <- function(model) {
 #' plotResidualQQ(m)
 plotResidualQQ <- function(model) {
   checkModel(model)
-  df <- data.frame(resid = residuals(model))
+  df <- data.frame(resid = rpearson_residuals(model))
   ggplot2::ggplot(df, ggplot2::aes(sample = resid)) +
     ggplot2::stat_qq() +
     ggplot2::stat_qq_line() +
@@ -179,7 +227,7 @@ plotResidualQQ <- function(model) {
 plotBubbleVariance <- function(model, variable = NULL) {
   checkModel(model)
   df <- data.frame(model.frame(model))
-  df$resid <- residuals(model)
+  df$resid <- rpearson_residuals(model)
   df$abs_resid <- abs(df$resid)
   if (is.null(variable)) {
     variable <- attr(terms(model), "term.labels")[1]
@@ -200,20 +248,26 @@ plotBubbleVariance <- function(model, variable = NULL) {
     theme_hetero()
 }
 
-#' Enhanced residuals vs fitted plot
+#' Enhanced residuals vs fitted plot (deprecated)
 #'
-#' Highlights influential observations and includes a LOESS smooth with
-#' confidence bands.
+#' Deprecated since 0.14.0: use `plotResidualsFitted(model, enhanced = TRUE)`,
+#' which draws the same plot. This name still works and warns.
 #'
-#' @inheritParams plotResidualsFitted
+#' @param model A fitted model of class `lm`.
 #' @return A \code{ggplot} object.
 #' @export
 plotResidualsFittedEnhanced <- function(model) {
-  checkModel(model)
+  .Deprecated("plotResidualsFitted(model, enhanced = TRUE)", old = "plotResidualsFittedEnhanced")
+  plotResidualsFitted(model, enhanced = TRUE)
+}
+
+# The plot behind plotResidualsFitted(enhanced = TRUE): influential points in
+# red, point size by the absolute residual, and the LOESS standard-error band.
+.plot_residuals_fitted_enhanced <- function(model) {
   df <- data.frame(
     fitted = fitted(model),
-    resid = residuals(model),
-    abs_resid = abs(residuals(model))
+    resid = rpearson_residuals(model),
+    abs_resid = abs(rpearson_residuals(model))
   )
   cd <- cooks.distance(model)
   df$influential <- cd > 4 / length(cd)
@@ -233,20 +287,15 @@ plotResidualsFittedEnhanced <- function(model) {
     theme_hetero()
 }
 
-#' Enhanced diagnostic plot suite
+#' Enhanced diagnostic plot suite (deprecated)
 #'
-#' Returns a list of improved diagnostic plots with statistical overlays.
+#' Deprecated since 0.14.0: use `plotDiagnosticSuite(model, enhanced = TRUE)`,
+#' which returns the same list. This name still works and warns.
 #'
-#' @inheritParams plotDiagnosticSuite
+#' @param model A fitted model of class `lm`.
 #' @return A list of ggplot objects.
 #' @export
 plotDiagnosticSuiteEnhanced <- function(model) {
-  checkModel(model)
-  list(
-    residuals_fitted = plotResidualsFittedEnhanced(model),
-    spread_level = plotSpreadLevel(model),
-    density = plotResidualDensity(model),
-    qq = plotResidualQQ(model),
-    bubble_variance = plotBubbleVariance(model)
-  )
+  .Deprecated("plotDiagnosticSuite(model, enhanced = TRUE)", old = "plotDiagnosticSuiteEnhanced")
+  plotDiagnosticSuite(model, enhanced = TRUE)
 }

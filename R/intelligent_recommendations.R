@@ -24,7 +24,7 @@ NULL
 #'   factors (e.g. high dimensionality, spatial columns).
 #' @export
 analyseDatasetCharacteristics <- function(data, response = NULL) {
-  checkData(data)
+  .check_data(data)
 
   response <- if (is.null(response)) NA_character_ else response
 
@@ -153,6 +153,25 @@ analyseDatasetCharacteristics <- function(data, response = NULL) {
   )
 }
 
+# What the advice for a sample of fewer than 100 observations says of the wild
+# bootstrap, in the warning of warnDiagnosticAssumptions() since 0.15.0 and in
+# step 1 of buildDiagnosticDecisionTree() since 0.16.0; the rationale of
+# suggestDiagnosticsForProfile() says the same with the rates of both kinds of
+# errors. In the package's validation
+# study of the multiplier (inst/validation/wild-multiplier-size.R, B = 999)
+# it holds its level with normal and t5 errors at 30, 50 and 100
+# observations, and with centred exponential errors rejects 8.2%, 7.3% and
+# 6.1% of the time at the 5% level with the Rademacher multiplier, 7.8%, 7.0%
+# and 5.9% with the Mammen multiplier.
+rwild_small_sample_caution <- function() {
+  paste(
+    "with skewed errors the wild bootstrap does not hold its level",
+    "here: in the package's validation study it rejected a true null hypothesis 6% to 8% of",
+    "the time at the 5% level at 30 to 100 observations. Check the residuals for skewness",
+    "and read p-values near the level with caution."
+  )
+}
+
 #' Suggest diagnostics based on dataset profile
 #'
 #' Uses heuristics that consider sample size, dimensionality, missingness, and
@@ -168,49 +187,109 @@ suggestDiagnosticsForProfile <- function(profile) {
   stopifnot(is.list(profile))
 
   recommendations <- list(
-    list(test = "breusch_pagan", rationale = "Baseline regression-based heteroscedasticity check."),
+    list(
+      test = "koenker",
+      rationale = paste(
+        "Baseline regression-based heteroscedasticity check, studentized so",
+        "that it does not assume normal errors."
+      )
+    ),
     list(test = "white", rationale = "Detects general forms of non-constant variance.")
   )
 
+  # The wild bootstrap holds its level at 30 to 100 observations with normal
+  # and t5 errors, but not with skewed ones (inst/validation/
+  # wild-multiplier-size.R); its rationale says what the warning of
+  # warnDiagnosticAssumptions() says.
   if (identical(profile$size_bucket, "small")) {
     recommendations <- c(recommendations, list(
-      list(test = "wild_bootstrap", rationale = "Bootstrap inference performs well in small samples."),
+      list(
+        test = "wild_bootstrap",
+        rationale = paste(
+          "In the package's validation study, at 30 to 100 observations, the wild bootstrap",
+          "rejected a true null hypothesis 4.3% to 5.1% of the time at the 5% level with",
+          "normal and t5 errors, but 6% to 8% of the time with skewed errors. Check the",
+          "residuals for skewness and read p-values near the level with caution."
+        )
+      ),
       list(test = "rank_permutation", rationale = "Rank-based test is robust when asymptotics are unreliable.")
     ))
   }
 
+  # Koenker's test is in the baseline for every profile, so a very large
+  # sample does not add it a second time.
   if (identical(profile$size_bucket, "very_large")) {
     recommendations <- c(recommendations, list(
-      list(test = "hc_covariance", rationale = "HC3/HC4 covariance estimators stabilise inference for large datasets."),
-      list(test = "quantile_regression", rationale = "Quantile-based check highlights distributional heterogeneity.")
+      list(
+        test = "quantile_regression",
+        rationale = "Quantile-based checks can reveal distributional heterogeneity."
+      )
     ))
   }
 
   if (isTRUE(profile$high_dimensional)) {
     recommendations <- c(recommendations, list(
-      list(test = "high_dimensional", rationale = "Designed for scenarios where predictors outnumber observations.")
+      list(
+        test = "high_dimensional",
+        rationale = paste(
+          "Experimental projection diagnostic for scenarios where predictors",
+          "outnumber observations."
+        )
+      )
     ))
   }
 
   if (isTRUE(profile$detected_spatial_fields)) {
     recommendations <- c(recommendations, list(
-      list(test = "spatial_hetero", rationale = "Spatial heteroscedasticity diagnostic for geographic data."),
-      list(test = "wild_bootstrap", rationale = "Spatial dependence often benefits from bootstrap-based inference.")
+      list(
+        test = "spatial_hetero",
+        rationale = "Spatial diagnostic for geographic residual-scale structure."
+      ),
+      list(
+        test = "wild_bootstrap",
+        rationale = paste(
+          "Bootstrap-based inference can complement spatial diagnostics when",
+          "its assumptions are appropriate."
+        )
+      )
     ))
   }
 
   if (!is.null(profile$missingness) && profile$missingness$overall_rate >= 0.05) {
     recommendations <- c(recommendations, list(
-      list(test = "quantile_regression", rationale = "Quantile diagnostics remain informative with moderate missingness."),
-      list(test = "wild_bootstrap", rationale = "Bootstrap procedures mitigate imbalance from incomplete cases.")
+      list(
+        test = "quantile_regression",
+        rationale = paste(
+          "Quantile slope comparisons provide a complementary distributional",
+          "check after missing-data handling."
+        )
+      ),
+      list(
+        test = "wild_bootstrap",
+        rationale = paste(
+          "Bootstrap diagnostics can provide a complementary finite-sample",
+          "check after missing-data handling."
+        )
+      )
     ))
   }
 
   if (nrow(profile$numeric_distribution) > 0) {
-    skewed <- profile$numeric_distribution$variable[profile$numeric_distribution$shape %in% c("strong_right_skew", "strong_left_skew")]
+    skewed <- profile$numeric_distribution$variable[
+      profile$numeric_distribution$shape %in% c("strong_right_skew", "strong_left_skew")
+    ]
     if (length(skewed) > 0) {
       recommendations <- c(recommendations, list(
-        list(test = "quantile_regression", rationale = sprintf("Variables %s show strong skewness; quantile checks capture tail effects.", paste(skewed, collapse = ", ")))
+        list(
+          test = "quantile_regression",
+          rationale = sprintf(
+            paste(
+              "Variables %s show strong skewness; quantile slope comparisons",
+              "provide a complementary distributional check."
+            ),
+            paste(skewed, collapse = ", ")
+          )
+        )
       ))
     }
   }
@@ -353,7 +432,7 @@ interpretHeteroTestResults <- function(test_results, alpha = 0.05) {
 #'   tactics.
 #' @keywords internal
 identifyVariancePatterns <- function(model, data) {
-  res <- tryCatch(stats::residuals(model), error = function(e) NULL)
+  res <- tryCatch(rpearson_residuals(model), error = function(e) NULL)
   fitted_vals <- tryCatch(stats::fitted(model), error = function(e) NULL)
 
   if (is.null(res) || is.null(fitted_vals)) {
@@ -472,7 +551,7 @@ warnDiagnosticAssumptions <- function(profile, interpretations, model, data, tes
   }
 
   if (identical(profile$size_bucket, "small")) {
-    warnings <- c(warnings, "Sample size is limited; rely on wild bootstrap or permutation-based tests for reliable inference.")
+    warnings <- c(warnings, paste("Sample size is limited;", rwild_small_sample_caution()))
   }
 
   if (identical(profile$size_bucket, "very_large")) {
@@ -519,7 +598,11 @@ buildDiagnosticDecisionTree <- function(profile, recommendations) {
       step = 1L,
       condition = "Is the sample size < 100?",
       decision = if (identical(profile$size_bucket, "small")) "Yes" else "No",
-      recommendation = if (identical(profile$size_bucket, "small")) "Emphasise wild bootstrap and rank permutation tests." else "Standard regression diagnostics appropriate."
+      recommendation = if (identical(profile$size_bucket, "small")) {
+        paste("Add the wild bootstrap and rank permutation tests;", rwild_small_sample_caution())
+      } else {
+        "Standard regression diagnostics appropriate."
+      }
     ),
     list(
       step = 2L,
@@ -608,7 +691,9 @@ composeDiagnosticNarrative <- function(profile, interpretations, remediation, as
 
 #' Generate comprehensive heteroscedasticity recommendations
 #'
-#' @param model Fitted `lm`/`glm` model or a formula.
+#' @param model Fitted `lm`, or `glm` with the Gaussian family and the
+#'   identity link, or a model formula. The tests refuse a `glm` of any other
+#'   family or link since 0.15.0.
 #' @param data Optional data frame used when `model` is a formula or to
 #'   override the data stored in the model object.
 #' @param test_results Optional pre-computed diagnostics from
@@ -625,18 +710,18 @@ generateHeteroRecommendations <- function(model, data = NULL, test_results = NUL
                                           alpha = 0.05, include_report = TRUE) {
   if (inherits(model, "formula")) {
     if (is.null(data)) stop("`data` must be supplied when `model` is a formula", call. = FALSE)
-    checkData(data)
+    .check_data(data)
     model <- stats::lm(model, data = data)
   } else {
     checkModel(model)
     if (is.null(data)) {
       data <- model.frame(model)
     } else {
-      checkData(data)
+      .check_data(data)
     }
   }
 
-  validateTestInputs(model, data, test_name = "recommendation_engine", min_obs = 10)
+  .validate_test_inputs(model, data, test_name = "recommendation_engine", min_obs = 10)
 
   response <- tryCatch(as.character(stats::formula(model))[2], error = function(e) NA_character_)
   profile <- analyseDatasetCharacteristics(data, response = response)

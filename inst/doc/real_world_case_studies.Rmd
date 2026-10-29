@@ -14,6 +14,8 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 ```
 
 This vignette illustrates how to incorporate heteroTests into real analyses.
@@ -107,7 +109,7 @@ summary(survey_model)
 
 ```{r}
 survey_diag <- HeteroDiagnostic(survey_model, hetero_data)
-test(survey_diag, tests = c("white", "breusch_pagan"))
+runDiagnostics(survey_diag$model, survey_diag$data, tests = c("white", "breusch_pagan"))
 performGlejserTest(survey_model, hetero_data, "x")
 ```
 
@@ -115,10 +117,11 @@ performGlejserTest(survey_model, hetero_data, "x")
 plot(survey_diag, plots = c("spread_level"))
 ```
 
-*Interpretation.* Glejser's test and the scale-location plot both indicate that
-variance increases with `x`. Depending on the modelling goal, analysts might log
-transform the response or model the variance explicitly (e.g. via `lm` weights
-or `glm` with a variance function).
+*Interpretation.* The Glejser test (corrected for asymmetric errors, the
+default) and the scale-location plot both indicate that variance increases
+with `x`. Depending on the modelling goal, analysts might log transform the
+response or model the variance explicitly (e.g. via `lm` weights or `glm`
+with a variance function).
 
 ## Case study 3: Engineering reliability assessment
 

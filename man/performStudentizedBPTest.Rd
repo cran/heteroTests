@@ -2,55 +2,100 @@
 % Please edit documentation in R/additional_tests.R
 \name{performStudentizedBPTest}
 \alias{performStudentizedBPTest}
-\title{Studentized Breusch–Pagan test}
+\title{Studentized Breusch–Pagan test (deprecated)}
 \usage{
-performStudentizedBPTest(model, data)
+performStudentizedBPTest(model, data = NULL)
 }
 \arguments{
 \item{model}{A fitted \link[stats:lm]{stats::lm} object providing the residuals and design
 matrix for the auxiliary regression.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} containing the variables used to fit
-\code{model}. It must include all observations referenced by the model object.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design, weights and offset are read from the fit itself, so
+a model that transforms its variables, has an \code{offset()} term, or takes
+its \code{weights} or \code{offset} from a column of the data needs no \code{data}, and
+the model frame of \code{model} is accepted as \code{data} (since 0.16.0; before,
+such models needed \code{data}). Data that are given are matched to the
+observations of the fit: rows with row names of their own by name, in any
+order; rows that only number themselves (a tibble, a data.table, a data
+frame whose row names were reset) by the row numbers of the fit, or in the
+order of the fit when they hold one row per observation. The rows the fit
+dropped may be there or not. Data whose rows cannot be shown to hold the
+observations of the fit are refused; see \code{\link{test_results}}.}
 }
 \value{
 An object of class \code{htest} reporting the chi-squared statistic
 and p-value for the null hypothesis of constant error variance.
 }
 \description{
-Computes the Koenker–Bassett studentized Lagrange Multiplier statistic for
-heteroscedasticity by regressing centred squared residuals on the regressors.
-Compared with the classical Breusch–Pagan test, the studentized version is
-less sensitive to violations of normality and small-sample bias.
+\code{performStudentizedBPTest()} is deprecated since 0.14.0: use
+\code{\link[=performKoenkerTest]{performKoenkerTest()}}, which computes the same statistic. It still works
+and warns, and returns what it returned before except on a fit returned by
+\code{\link[=fitWLS]{fitWLS()}}. The model frame of that fit holds the weights of the model
+\code{fitWLS()} refitted (none, for an unweighted model), not the estimated
+weights, and before 0.15.0 \code{performStudentizedBPTest()} read them from
+there, so it computed the statistic of the unweighted fit. Since 0.15.0 it
+reads the weights of the fit, as \code{\link[=performKoenkerTest]{performKoenkerTest()}} does, and the two
+agree. On a model with an offset they agree since 0.16.0: before, the refit
+of the design left the offset out, and \code{performStudentizedBPTest()}
+returned the statistic of another model.
 }
 \details{
+Computes Koenker's (1981) studentized form of the Breusch–Pagan Lagrange
+multiplier statistic, \eqn{n R^2} from the regression of the squared
+residuals on the regressors. The classical Breusch–Pagan statistic assumes
+normal errors and this one does not: in the simulations of
+\verb{inst/validation/} it holds its level under \eqn{t_5} errors, where the
+classical statistic rejects far too often.
+
 Following Koenker (1981) and the implementation in
 \link[lmtest:bptest]{lmtest::bptest()}, the procedure fits an auxiliary
 regression of \eqn{e_i^2 - \hat{\sigma}^2} on the regressors from the
-original model (including the intercept), where \eqn{e_i} denotes the weighted
-residuals and \eqn{\hat{\sigma}^2} their mean squared error. Under
-homoskedasticity the statistic
-\eqn{T = n \sum w_i \hat{g}_i^2 / \sum (e_i^2 - \hat{\sigma}^2)^2} is
-asymptotically chi-squared with degrees of freedom equal to the number of
-regressors beyond the intercept. The implementation shares the validation
-helpers used across the package to ensure that: (i) the model and data satisfy
-minimum sample-size thresholds via \link[=rvalidateModelInputs]{rvalidateModelInputs()} and
-\link[=rvalidateDataInputs]{rvalidateDataInputs()}, (ii) missing values are handled by
-\link[=rhandleMissingValues]{rhandleMissingValues()}, and (iii) studentized-residual specific
-requirements registered in \link[=rvalidateTestRequirements]{rvalidateTestRequirements()} are
-met.
+original model (including the intercept), where \eqn{e_i} denotes the
+residuals and \eqn{\hat{\sigma}^2 = \sum e_i^2 / n} the mean of their
+squares. With \eqn{\hat{g}_i} the fitted values of that regression, the
+statistic \eqn{T = n \sum \hat{g}_i^2 / \sum (e_i^2 - \hat{\sigma}^2)^2} is
+its \eqn{n R^2}. Under homoskedasticity it is asymptotically chi-squared with
+degrees of freedom equal to the number of regressors beyond the intercept,
+whether or not the errors are normal. On a weighted fit \eqn{e_i} is the Pearson
+residual \eqn{\sqrt{w_i}} times the raw residual and the auxiliary
+regression is unweighted; see the section on weighted fits in
+\code{\link[=performKoenkerTest]{performKoenkerTest()}}. This departs from \code{lmtest::bptest()}, which keeps the
+raw residuals and weights the auxiliary regression. The residuals are those
+of the refit of the design of the fit to its response, with its weights and
+its offset, so on a model with an offset the statistic is that of the model
+fitted to the response minus the offset, Koenker's statistic of the model
+(since 0.16.0). The implementation
+shares the validation
+helpers used across the package to ensure that: (i) the model satisfies
+minimum sample-size thresholds via \link[=rvalidateModelInputs]{rvalidateModelInputs()}, (ii) the
+response, design, weights and offset are those of the fit itself, with the
+rows of \code{data} matched to its observations (the model context, since
+0.16.0), and (iii) the
+requirements registered for this test in
+\link[=rvalidateTestRequirements]{rvalidateTestRequirements()} are met.
+}
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. A model with an offset is accepted since 0.16.0: the refit of
+the design carries the offset, as \code{\link{performKoenkerTest}()} accounts for it.
+It refuses a multivariate \code{lm} ("needs a model with one response"), and, since 0.16.0, an
+\code{mgcv::gam()} fit with smooth terms: a smooth term is usually penalised, and a penalised fit
+is not the least-squares fit of the design the test fits again. A later step settles which tests
+take such a fit; a \code{gam} without smooth terms is tested as the Gaussian \code{glm} it is.
+Which model each test accepts, and why, is set out in \code{\link{test_results}}, under \emph{Supported
+models}.
 }
 \examples{
 data(mtcars)
 mod <- lm(mpg ~ wt + qsec, data = mtcars)
-performStudentizedBPTest(mod, mtcars)
-
-# Detect heteroscedasticity driven by a single regressor
-set.seed(321)
-x <- runif(180)
-y <- 5 - 1.5 * x + rnorm(180, sd = 0.4 + 0.6 * x)
-df <- data.frame(y, x)
-performStudentizedBPTest(lm(y ~ x, data = df), df)
+# Deprecated: warns, and returns the statistic of performKoenkerTest()
+suppressWarnings(performStudentizedBPTest(mod, mtcars))
+performKoenkerTest(mod, mtcars)
 
 }
 \references{
@@ -59,12 +104,13 @@ Koenker, R. (1981). A note on studentizing a test for heteroscedasticity.
 \doi{10.1016/0304-4076(81)90062-2}
 
 Davidson, R., & MacKinnon, J. G. (2004). \emph{Econometric Theory and Methods}.
-Oxford University Press. Section 16.7 discusses LM tests for heteroscedasticity
-including studentized variants.
+Oxford University Press. Section 7.5 derives the test as \eqn{n R^2} from
+the regression of the squared residuals on the variance regressors.
 }
 \seealso{
-\code{\link[=performBPTest]{performBPTest()}} for the classical LM statistic and \code{\link[=performKoenkerTest]{performKoenkerTest()}} for
-the absolute-residual variant. The robust workflow in
+\code{\link[=performBPTest]{performBPTest()}} for the classical LM statistic, which assumes normal
+errors, and \code{\link[=performKoenkerTest]{performKoenkerTest()}}, which computes the same studentized
+\eqn{n R^2} statistic on the squared residuals. The robust workflow in
 \link[=performBPTestRobust]{performBPTestRobust()} augments the studentized statistic with bootstrap
 diagnostics.
 }

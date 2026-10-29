@@ -9,6 +9,8 @@ vignette: >
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(collapse = TRUE, comment = "#")
+# The tests log each run at the INFO level; this guide shows their results.
+heteroTests::ht_set_log_level("WARN")
 ```
 
 The **heteroTests** package provides several classical tests for detecting heteroscedasticity in linear models.
@@ -54,7 +56,7 @@ Several diagnostics can also be run together.
 # Alternatively run multiple tests at once
 runHeteroTests(model, quakes)
 # Choose a subset of diagnostics
-runHeteroTests(model, quakes, tests = c("white", "koenker", "ncv"))
+runHeteroTests(model, quakes, tests = c("white", "koenker", "cook_weisberg"))
 runDiagnostics(model, quakes)
 ```
 
@@ -97,12 +99,12 @@ This short example shows how to detect heteroscedasticity, choose a remedy and r
 
 ```{r step-by-step}
 hd <- HeteroDiagnostic(stations ~ mag + depth, quakes)
-test(hd)
+runDiagnostics(hd$model, hd$data)
 
 wls_model <- fitWLS(hd$model)
 
 # Re-test after remedy
-test(HeteroDiagnostic(wls_model, quakes))
+runDiagnostics(wls_model, quakes)
 ```
 
 The drop in test statistics or diagnostic plots indicates whether the remedy helped.
@@ -125,7 +127,7 @@ data(mtcars)
 model <- lm(mpg ~ wt + hp, data = mtcars)
 
 # Our implementation
-our_result <- performBreuschPaganTest(model, mtcars)
+our_result <- performBPTest(model, mtcars)
 
 # Reference implementation
 ref_result <- bptest(model)

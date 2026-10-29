@@ -6,9 +6,16 @@
 #'
 #' @param model A fitted [stats::lm] object providing residuals and fitted values
 #'   for the auxiliary regression.
+#' @param data Optional data frame the model was fitted to. When `NULL`, the
+#'   default, the model frame of `model` is used. The statistic is computed
+#'   from the residuals and fitted values of `model`, so `data` does not change
+#'   the result; it is accepted so that every test takes `(model, data, ...)`.
 #' @param degree Positive integer specifying the polynomial degree used for the
 #'   fitted values (default `2`). Higher degrees allow more flexible variance
-#'   functions but require larger samples.
+#'   functions but require larger samples. Before 0.15.0 `degree` was the
+#'   second argument: a number passed there by position is still read as
+#'   `degree`, with a warning that shows the new call; that form stops working
+#'   in 1.0.0.
 #'
 #' @return An object of class \code{htest} with the F statistic, numerator and
 #'   denominator degrees of freedom, and p-value for the joint null of constant
@@ -52,15 +59,32 @@
 #' @seealso
 #' [performHarveyTest()] and [performNCVTest()] for related
 #' variance-function diagnostics.
-performDavidianCarrollTest <- function(model, degree = 2) {
+performDavidianCarrollTest <- function(model, data = NULL, degree = 2) {
+  rrefuse_non_gaussian_glm(model, "performDavidianCarrollTest")
+  if (is.numeric(data) && is.null(dim(data)) && missing(degree)) {
+    rwarn_positional_call(
+      "performDavidianCarrollTest", substitute(model), list(degree = substitute(data))
+    )
+    degree <- data
+    data <- NULL
+  }
+  # The model context (R/model_context.R) refuses a model frame that
+  # `model = FALSE` rebuilt from data changed after the fit. The test reads
+  # nothing from `data`, which is matched to the observations of the fit as by
+  # every test built on the context (decision 31).
+  rcheck_data_argument(data, "performDavidianCarrollTest")
+  ctx <- rmodel_context(model, data, fn = "performDavidianCarrollTest",
+                        test_label = "Davidian-Carroll")
   if (!inherits(model, "lm")) {
     stop("`model` must be an object of class 'lm'.")
   }
+  rrefuse_nonfinite_coefficients(model, "Davidian-Carroll test", allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
   if (!is.numeric(degree) || degree < 1) {
     stop("`degree` must be a positive integer.")
   }
 
-  res <- residuals(model)
+  res <- rpearson_residuals(model)
   fit <- fitted(model)
   # Under na.action = na.exclude both vectors are padded back to the original
   # row count with NA placeholders, which made var(fit) NA and turned the

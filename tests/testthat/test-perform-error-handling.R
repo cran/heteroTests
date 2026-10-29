@@ -26,10 +26,10 @@ test_that("core perform*Test functions reject invalid model inputs", {
   cases <- list(
     list(name = "white", fun = performWhiteTest, args = list(data = base_data), expected = c(msg_glm, msg_glm_plain)),
     list(name = "bp", fun = performBPTest, args = list(data = base_data), expected = c(msg_glm, msg_glm_plain)),
-    list(name = "studentized", fun = performStudentizedBPTest, args = list(data = base_data), expected = c(msg_terms, msg_glm, msg_glm_plain)),
+    list(name = "studentized", fun = function(model, ...) without_deprecation(performStudentizedBPTest(model, ...)), args = list(data = base_data), expected = c(msg_terms, msg_glm, msg_glm_plain)),
     list(name = "koenker", fun = performKoenkerTest, args = list(data = base_data), expected = c(msg_glm, msg_glm_plain)),
     list(name = "gq", fun = performGQTest, args = list(data = base_data, order_by = "order_var"), expected = c(msg_glm, msg_glm_plain)),
-    list(name = "ncv", fun = performNCVTest, args = list(), expected = c(msg_lm_only, msg_glm, msg_glm_plain)),
+    list(name = "ncv", fun = function(model, ...) without_deprecation(performNCVTest(model, ...)), args = list(), expected = c(msg_lm_only, msg_glm, msg_glm_plain)),
     list(name = "harvey", fun = performHarveyTest, args = list(), expected = c(msg_glm, msg_glm_plain)),
     list(name = "park", fun = performParkTest, args = list(data = base_data, variable = "positive"), expected = c(msg_glm, msg_glm_plain)),
     list(name = "glejser", fun = performGlejserTest, args = list(data = base_data, variable = "positive"), expected = c(msg_glm, msg_glm_plain)),

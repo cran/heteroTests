@@ -1,0 +1,1249 @@
+# The model context: one source, per call, for what a test reads from a fitted
+# model and from its data.
+#
+# A test that is migrated to the context builds it first, with
+# rmodel_context(), and reads from it the response, the design, the residuals
+# and fitted values, the weights, the offset, the rank and the aliased
+# columns, all taken from the stored fit; it never evaluates the call or the
+# formula again, so `subset =`, `weights =`, `offset =`, `na.action` and
+# variables of the workspace cannot be applied twice or found elsewhere, and a
+# term computed from all the rows the fit saw, such as `I(x > median(x))`, keeps
+# the values the fit used. `data`, when it is given, is matched to the
+# observations of the fit by the guard of 0.15.0 (rdata_fit_rows() and
+# rcheck_rows_at(), R/interface.R), so data it refuses are refused with the same
+# message and class, and the context then reads from `data` only the rows the
+# guard confirmed. Nothing is dropped or renumbered before the match.
+#
+# The context is an internal list of class `ht_model_context`. It is built for
+# one call and dropped when the call returns: it is never stored, returned,
+# exported or cached, and it holds no global or mutable state. It is not the
+# validation cache of R/validation.R, whose checks the tests keep calling as
+# before. Since 0.16.0 the caches of results (R/cache.R) hash its parts, built
+# without `data`, into the key of a fit (rcache_fit_key()); the context itself
+# is dropped there too.
+#
+# docs/design/model-context.md sets out the contract, the migration of the
+# tests in increments, and the decisions behind it. Since 0.16.0 (increment 1)
+# performWhiteTest(), performBPTest() and performBreuschPaganTest(),
+# performKoenkerTest() (and, increment 7, their streaming forms,
+# performWhiteTestStreaming(), performBPTestStreaming() and
+# performKoenkerTestStreaming(), which read the stored design chunk by chunk,
+# rstreaming_design() in R/performance.R), performRankPermutationTest() and
+# performHighDimensionalTest() are built on it, (increment 2) the
+# studentized Breusch-Pagan statistic (.studentized_bp_test()),
+# performRESETTest(), performGQTest() and performQuantileRegressionTest(), and
+# (increment 3) performGlejserTest(), performParkTest(), performSzroeterTest()
+# with the registered "szroeter" (.szroeter_test()),
+# performHarrisonMcCabeTest(), performHartleyFmaxTest() and
+# performSpatialHeteroTest(), and (increment 4) the five group tests,
+# performLeveneTest(), performBrownForsytheTest(), performFlignerKilleenTest(),
+# performBartlettTest() and performOBrienTest() (rcontext_group_rows()), and
+# (increment 5) performPesaranTest(), performBPRandomEffectsTest() and
+# performScatterDiagnostic() (rcontext_columns_at_fit()), and so
+# runPanelTests(), which runs the two panel tests, and (increment 6) the tests
+# computed from the model alone, performSpearmanTest(), performHarveyTest(),
+# performArchLMTest(), performMcLeodLiTest(), performCookWeisbergTest() and
+# performNCVTest(), performSpreadLevelTest(), performDavidianCarrollTest() and
+# performVarianceFormTest(), with fitWLS() (rcontext_second_formula(),
+# rcontext_formula_rows()), which match `data` as every test built on the
+# context does (decision 31); the other tests still
+# prepare the model and data with rdata_or_model_frame() and
+# prepare_model_data_for_test().
+
+#' Build the model context of a test
+#'
+#' Runs the refusals every test makes first: a model that is not an `lm` or a
+#' least-squares `glm`, a `survey::svyglm()` fit
+#' ([rrefuse_non_gaussian_glm()]), a multivariate `lm` ([rcontext_kind()]),
+#' and a model frame that `model = FALSE` rebuilt from data that changed after
+#' the fit ([rcheck_model_frame()], with or without `data`). It then takes the
+#' parts of the fit, and, when `data` is given, matches its rows to the
+#' observations ([rcontext_align()]). The messages are those the tests gave;
+#' on a call with more than one defect, the first one reported may differ.
+#' The refusals of the context itself have class
+#' `heteroTests_model_context_error`, and those of `data` the class of the
+#' guard, `heteroTests_data_rows_error`: both are final in the runners.
+#'
+#' A fit with `model = FALSE` whose model frame can no longer be rebuilt from
+#' the data it refers to is tested on `data`, when `data` is given and gives
+#' the response and the fitted values of the fit ([rcontext_frame_from_data()]).
+#'
+#' @param model The fitted model of the calling test.
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @param fn Character scalar naming the calling test, for the refusals of the
+#'   model. The refusals of `data` name the function the user called
+#'   ([rtest_name()]), which is the test itself, a deprecated name such as
+#'   `performBreuschPaganTest()`, or a wrapper such as
+#'   `performWhiteTestRobust()`.
+#' @param test_label Character scalar naming the test in the messages on rows
+#'   that `data` lacks ([rstop_data_rows()]).
+#' @param need Character vector of the variables the test reads besides the
+#'   model, such as a grouping or ordering variable, named by the role they
+#'   play; see [rcontext_variables()].
+#' @param reads Character vector of the columns of `data` the test may read
+#'   itself, from [rcontext_rows()], such as the `order_by` of
+#'   [performRankPermutationTest()]. Those that are not columns of the model
+#'   frame make the alignment stricter for data taken in the order of the fit
+#'   ([rcontext_align()]).
+#' @return A list of class `ht_model_context`:
+#'   \describe{
+#'     \item{`model`}{the fit.}
+#'     \item{`kind`}{`"lm"`, `"glm_gaussian"`, `"gam"`, `"fitwls"` or `"rlm"`.}
+#'     \item{`frame`}{the model frame, `stats::model.frame(model)`.}
+#'     \item{`obs_id`}{the names of the observations, in the order of the fit.}
+#'     \item{`na_action`}{`model$na.action`.}
+#'     \item{`response`}{the response, on the scale of the fit (`log(y)` for
+#'       `log(y) ~ x`).}
+#'     \item{`design`}{the design of the fit, every column,
+#'       `stats::model.matrix(model)`; [rcontext_design()] leaves out the
+#'       aliased ones.}
+#'     \item{`residuals`, `fitted`}{`model$residuals` and
+#'       `model$fitted.values`, one per fitted observation, without the
+#'       padding of `na.exclude`.}
+#'     \item{`weights`}{the prior weights, [rleast_squares_weights()], or
+#'       `NULL`.}
+#'     \item{`offset`}{the total offset, the `offset` argument plus the
+#'       `offset()` terms, or `NULL`.}
+#'     \item{`rank`, `aliased`, `qr_tol`}{the rank of the fit, its aliased
+#'       coefficients ([raliased_coefficients()]) and the tolerance its rank
+#'       was decided with (`1e-7` for an `lm`, `1e-11` for a `glm`).}
+#'     \item{`variance_function`}{the variance function of a [fitWLS()] fit,
+#'       or `NULL`.}
+#'     \item{`rows`}{for each observation, the row of `data` that holds it, or
+#'       `NULL` without `data`.}
+#'     \item{`alignment`}{how they were found: `"model_frame"` (no `data`),
+#'       `"row_names"`, `"row_numbers"` or `"in_order"`.}
+#'     \item{`variables`}{the variables named in `need`, one value per
+#'       observation, in the order of the fit.}
+#'   }
+#' @keywords internal
+#' @noRd
+rmodel_context <- function(model, data = NULL, fn, test_label = fn, need = character(),
+                           reads = character()) {
+  # The function the user called, named by the refusals of `data`. It is
+  # looked for only when one is made, so a call that is not refused does not
+  # search the stack (rtest_name()).
+  caller_frame <- sys.parent()
+  delayedAssign("caller", rtest_name(caller_frame, default = fn))
+  kind <- rcontext_kind(model, fn)
+  frame <- tryCatch(stats::model.frame(model), error = function(e) e)
+  if (inherits(frame, "error") || !is.data.frame(frame)) {
+    # A fit with `model = FALSE` whose data are gone: its frame is built from
+    # `data`, and used only if it gives the response and the fitted values of
+    # the fit (rcontext_frame_from_data()).
+    rebuilt <- if (is.data.frame(data)) rcontext_frame_from_data(model, data)
+    if (!is.data.frame(rebuilt)) {
+      # `data` that lack rows named as the observations of the fit, as the
+      # tibble of a fit to named data does, cannot be matched to them.
+      unmatched <- if (is.list(rebuilt)) rebuilt$unmatched
+      rstop_model_context(sprintf(
+        paste0(
+          "%s() cannot use the model frame of `model`: it cannot be rebuilt (%s)%s. ",
+          "A model fitted with `model = FALSE` rebuilds it from the data it was ",
+          "fitted on. Refit the model, or keep its model frame with `model = TRUE`, ",
+          "the default."
+        ),
+        caller,
+        if (inherits(frame, "error")) conditionMessage(frame) else "not a data frame",
+        if (length(unmatched) > 0L) {
+          sprintf(
+            paste0(
+              ", and the rows of `data` cannot be matched to the observations of the fit: ",
+              "`data` has no rows named %s"
+            ),
+            paste(unmatched, collapse = ", ")
+          )
+        } else if (is.data.frame(data)) {
+          ", and `data` does not give the response and the fitted values of the fit"
+        } else {
+          ""
+        }
+      ))
+    }
+    frame <- rebuilt
+    design <- stats::model.matrix(attr(frame, "terms"), frame, contrasts.arg = model$contrasts)
+  } else {
+    # A frame that model = FALSE rebuilt from data that changed after the fit,
+    # with or without `data` (#130).
+    rcheck_model_frame(model, frame, caller)
+    design <- stats::model.matrix(model)
+  }
+  offset <- stats::model.offset(frame)
+  ctx <- structure(
+    list(
+      model = model,
+      kind = kind,
+      frame = frame,
+      obs_id = rcontext_ids(model, frame),
+      na_action = model$na.action,
+      response = stats::model.response(frame, "numeric"),
+      design = design,
+      residuals = model$residuals,
+      fitted = model$fitted.values,
+      weights = rleast_squares_weights(model),
+      offset = if (!is.null(offset)) as.vector(offset),
+      rank = model$rank,
+      aliased = raliased_coefficients(model),
+      qr_tol = model$qr$tol %||% 1e-7,
+      variance_function = attr(model, "variance_function"),
+      rows = NULL,
+      alignment = "model_frame",
+      variables = list()
+    ),
+    class = "ht_model_context"
+  )
+  if (!is.null(data)) {
+    # Does the test read columns of `data` beyond the model frame, which the
+    # comparison of the alignment cannot check?
+    beyond <- length(need) > 0L ||
+      (is.data.frame(data) && any(reads %in% setdiff(names(data), names(frame))))
+    aligned <- rcontext_align(ctx, data, caller, test_label, beyond)
+    ctx$rows <- aligned$rows
+    ctx$alignment <- aligned$alignment
+  }
+  ctx$variables <- rcontext_variables(ctx, data, need)
+  ctx
+}
+
+# The refusals of the context are final, as decided on 2026-10-16 (decision 6
+# of the design): runHeteroTests() and runDiagnostics() run no other test
+# under the name of one the context refused (ht_analyse_failure()).
+rstop_model_context <- function(message) {
+  stop(structure(
+    class = c("heteroTests_model_context_error", "error", "condition"),
+    list(message = message, call = NULL)
+  ))
+}
+
+#' Refuse an `mgcv::gam()` fit with smooth terms
+#'
+#' A Gaussian `mgcv::gam()` fit without smooth terms is the least-squares fit
+#' of its design, the fit of the Gaussian `glm`. A smooth term is penalised
+#' unless it is fixed (`s(x, fx = TRUE)`), and a penalised fit is not the
+#' least-squares fit of its design: its coefficients do not solve the
+#' least-squares equations, and a test that fits that design again, its
+#' segments or its quantiles, tests an unpenalised regression the model is not.
+#' Whether the tests take such a fit is a question of the contract left to the
+#' last step of the migration, with `MASS::rlm()` (increment 11 of the design
+#' of the model context); until then the tests of increment 2 refuse every fit
+#' with smooth terms, fixed ones included, decided on 2026-10-18, and those of
+#' increment 1 test it as before 0.16.0.
+#'
+#' @param ctx The model context.
+#' @param fn Character scalar naming the calling test.
+#' @return `NULL`, invisibly; called for the error, of class
+#'   `heteroTests_model_context_error`.
+#' @keywords internal
+#' @noRd
+rrefuse_smooth_gam <- function(ctx, fn) {
+  smooths <- ctx$model$smooth
+  if (!identical(ctx$kind, "gam") || length(smooths) == 0L) {
+    return(invisible(NULL))
+  }
+  labels <- vapply(smooths, function(s) as.character(s$label %||% "a smooth"), character(1))
+  rstop_model_context(sprintf(
+    paste0(
+      "%s() cannot test an mgcv::gam() fit with smooth terms (%s): a smooth term is ",
+      "usually penalised, and a penalised fit is not the least-squares fit of its design, ",
+      "which the test fits again. Whether the tests take such a fit is left to a later ",
+      "step of the package. Refit the model with lm() or glm(), with a parametric term ",
+      "such as splines::ns() in place of each smooth."
+    ),
+    fn, paste(labels, collapse = ", ")
+  ))
+}
+
+# The names of the observations, in the order of the fit: those of its
+# residuals, or, for a fit whose residuals carry none (mgcv::gam()), the row
+# names of its model frame, or their numbers.
+rcontext_ids <- function(model, frame) {
+  n <- length(model$residuals)
+  ids <- names(model$residuals)
+  if (length(ids) == n && !anyNA(ids)) {
+    return(ids)
+  }
+  ids <- rownames(frame)
+  if (length(ids) == n) {
+    return(ids)
+  }
+  as.character(seq_len(n))
+}
+
+#' The model frame of a fit with `model = FALSE`, from `data`
+#'
+#' A fit with `model = FALSE` keeps no model frame, and `model.frame()`
+#' rebuilds it from the data the fit refers to; when those are gone, it is
+#' rebuilt here from `data`, through the call of the fit and the `predvars` of
+#' its terms, and kept only if, on the rows of the fit, it gives the response
+#' of the fit and, times the coefficients plus its offset, the fitted linear
+#' predictor, the checks of [rcheck_model_frame()], to `1e-8`.
+#'
+#' The rows are matched by the names of the observations of the fit. When
+#' `data` lacks some of them, as a tibble, which numbers its rows, lacks those
+#' of a fit to data with row names of their own, the frame is not built, and
+#' the names `data` lacks are returned, so that the refusal can say so.
+#'
+#' @param model The fitted model.
+#' @param data The `data` argument of the calling test.
+#' @return The model frame, on the rows of the fit in its order; `NULL`; or,
+#'   when `data` lacks rows named as observations of the fit, a list with the
+#'   first three of their names as `unmatched`.
+#' @keywords internal
+#' @noRd
+rcontext_frame_from_data <- function(model, data) {
+  if (!inherits(model, "lm") || !is.null(model[["model"]])) {
+    return(NULL)
+  }
+  frame <- tryCatch(stats::model.frame(model, data = data), error = function(e) NULL)
+  ids <- names(model$residuals)
+  if (!is.data.frame(frame) || is.null(ids)) {
+    return(NULL)
+  }
+  rows <- match(ids, rownames(frame))
+  if (anyNA(rows)) {
+    return(list(unmatched = utils::head(ids[is.na(rows)], 3L)))
+  }
+  if (!identical(rows, seq_len(nrow(frame)))) {
+    model_terms <- attr(frame, "terms")
+    frame <- frame[rows, , drop = FALSE]
+    attr(frame, "terms") <- model_terms
+  }
+  if (!isTRUE(rframe_holds_response(model, frame)) || !isTRUE(rframe_holds_fit(model, frame))) {
+    return(NULL)
+  }
+  frame
+}
+
+#' The kind of fit, after the refusals of the model
+#'
+#' Calls [rrefuse_non_gaussian_glm()] first, which refuses a
+#' `survey::svyglm()` fit, a model that is neither an `lm` nor a `glm`, and a
+#' `glm` that is not a least-squares fit, each with the message every test
+#' gives since 0.15.0. A multivariate `lm`, `lm(cbind(y1, y2) ~ x)`, which
+#' inherits from `lm`, is refused next: the tests take one response, and before
+#' 0.16.0 they stopped on it with a coercion error.
+#'
+#' A Gaussian `mgcv::gam()` fit, a `glm` by class, is accepted as before
+#' 0.16.0; whether a penalised fit with smooth terms is an input the tests
+#' justify is left to the last step of the migration, with `MASS::rlm()`.
+#'
+#' @param model The fitted model.
+#' @param fn Character scalar naming the calling test.
+#' @return `"gam"` (an `mgcv::gam()` fit), `"glm_gaussian"`, `"fitwls"` (a
+#'   [fitWLS()] fit), `"rlm"` (a `MASS::rlm()` fit) or `"lm"`.
+#' @keywords internal
+#' @noRd
+rcontext_kind <- function(model, fn) {
+  rrefuse_non_gaussian_glm(model, fn)
+  if (inherits(model, "mlm") || is.matrix(model$residuals)) {
+    responses <- NCOL(model$residuals)
+    rstop_model_context(
+      sprintf("%s() needs a model with one response; `model` has %d.", fn, responses)
+    )
+  }
+  if (inherits(model, "gam")) {
+    return("gam")
+  }
+  if (inherits(model, "glm")) {
+    return("glm_gaussian")
+  }
+  if (!is.null(attr(model, "variance_function"))) {
+    return("fitwls")
+  }
+  if (inherits(model, "rlm")) {
+    return("rlm")
+  }
+  "lm"
+}
+
+#' Match the rows of `data` to the observations of the fit
+#'
+#' The alignment step is the guard of 0.15.0. `data` must be a data frame
+#' holding the variables of the model, or the columns of its model frame
+#' ([rvalidateDataInputs()], with today's messages). Its rows are then picked
+#' by row name, and for data that number their rows (a tibble, a data.table, a
+#' data frame whose row names were reset) by the original row numbers of the
+#' fit ([rdata_fit_rows()]). Data that number their rows and have exactly one
+#' row per observation, whose numbers are not those of the fit, as the
+#' complete rows of a fit with `na.omit` renumbered, or the tibble in fit order
+#' of a fit to data with character row names, are taken in the order of the
+#' fit (decided on 2026-10-18). The rows picked either way must reproduce the
+#' model frame ([rcheck_rows_at()]); data that lack a row of the fit are
+#' refused with the message of [rstop_data_rows()]. Nothing is matched by
+#' position without that comparison, and nothing is dropped before it.
+#'
+#' Rows taken in the order of the fit are confirmed only up to rows that tie
+#' on every column the comparison checked: two such rows could be exchanged
+#' without a trace in the model frame. That changes nothing a test computes
+#' from the model, but it changes the columns of `data` beyond the model frame,
+#' such as the variable a test orders by. So when the test reads such columns
+#' (`beyond`), data taken in the order of the fit are refused if any two rows
+#' of the fit tie on every compared column.
+#'
+#' @param ctx The model context, before its rows are set.
+#' @param data The `data` argument of the calling test, not `NULL`.
+#' @param fn Character scalar naming the function the user called.
+#' @param test_label Character scalar naming the test in the messages on
+#'   rows that `data` lacks.
+#' @param beyond Logical: does the test read columns of `data` beyond the
+#'   model frame?
+#' @return A list with `rows`, the row of `data` holding each observation, and
+#'   `alignment`.
+#' @keywords internal
+#' @noRd
+rcontext_align <- function(ctx, data, fn, test_label, beyond = FALSE) {
+  frame <- ctx$frame
+  # The model frame itself, given as `data`, holds the terms (`log(x)`) rather
+  # than the variables (`x`), and is accepted as it is.
+  holds_frame <- is.data.frame(data) && all(names(frame) %in% names(data))
+  required <- if (holds_frame) NULL else unique(all.vars(stats::terms(ctx$model)))
+  rvalidateDataInputs(data, required_vars = required, min_obs = 0L)
+  numbered <- .row_names_info(data) < 0L
+  rows <- rdata_fit_rows(frame, data, fn)
+  alignment <- if (numbered) "row_numbers" else "row_names"
+  if (is.null(rows) && numbered && nrow(data) == length(ctx$residuals)) {
+    rows <- seq_len(nrow(data))
+    alignment <- "in_order"
+  }
+  if (is.null(rows)) {
+    rstop_data_rows(ctx$residuals, data, test_label)
+  }
+  checked <- rcheck_rows_at(ctx$model, frame, data, rows, fn, numbered)
+  if (identical(alignment, "in_order") && isTRUE(beyond)) {
+    compared <- attr(checked, "compared")
+    if (rrows_repeat(frame, compared)) {
+      rstop_data_rows_unmatched(fn, "in_order_ties", compared = compared)
+    }
+  }
+  list(rows = rows, alignment = alignment)
+}
+
+# Do two rows of the model frame tie on every column in `compared`? Factors
+# by their codes, numbers exactly.
+rrows_repeat <- function(frame, compared) {
+  if (nrow(frame) < 2L) {
+    return(FALSE)
+  }
+  keys <- list()
+  for (column in compared) {
+    v <- frame[[column]]
+    parts <- if (is.matrix(v)) lapply(seq_len(ncol(v)), function(j) v[, j]) else list(v)
+    for (p in parts) {
+      keys[[length(keys) + 1L]] <- if (is.factor(p)) as.integer(p) else p
+    }
+  }
+  if (length(keys) == 0L) {
+    return(TRUE)
+  }
+  names(keys) <- paste0("k", seq_along(keys))
+  anyDuplicated(as.data.frame(keys, stringsAsFactors = FALSE)) > 0L
+}
+
+#' The variables a test reads besides the model
+#'
+#' Without `data`, a variable is read from the model frame when the frame
+#' holds it under its own name and it is a variable of the formula; the frame
+#' holds the terms of the model (`log(x)`), not the variables they are computed
+#' from, so any other variable is refused with a message that says so. With
+#' `data`, a variable is read from the rows the alignment confirmed, in the
+#' order of the fit.
+#'
+#' @param ctx The model context.
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @param need Character vector of variable names. Its names, when given, are
+#'   the names of the elements of the result.
+#' @return A named list, one vector (or matrix) per variable, with one value
+#'   (row) per observation.
+#' @keywords internal
+#' @noRd
+rcontext_variables <- function(ctx, data, need) {
+  if (length(need) == 0L) {
+    return(list())
+  }
+  roles <- names(need)
+  if (is.null(roles)) {
+    roles <- need
+  }
+  roles[!nzchar(roles)] <- need[!nzchar(roles)]
+  if (is.null(data)) {
+    held <- need %in% names(ctx$frame) & need %in% all.vars(stats::formula(ctx$model))
+    if (!all(held)) {
+      rstop_missing_from_frame(ctx, need[!held])
+    }
+    return(stats::setNames(lapply(need, function(v) ctx$frame[[v]]), roles))
+  }
+  absent <- setdiff(need, names(data))
+  if (length(absent) > 0L) {
+    rvalidateDataInputs(data, required_vars = absent, min_obs = 0L)
+  }
+  rows <- ctx$rows
+  stats::setNames(
+    lapply(need, function(v) {
+      x <- data[[v]]
+      if (is.matrix(x)) x[rows, , drop = FALSE] else x[rows]
+    }),
+    roles
+  )
+}
+
+# M1: variables a test reads that the model frame does not hold under their
+# own names, without `data`. `also` adds a sentence, for a second formula
+# (rcontext_formula_rows()).
+rstop_missing_from_frame <- function(ctx, absent, also = NULL) {
+  terms_held <- setdiff(names(ctx$frame), c("(weights)", "(offset)"))
+  rstop_model_context(paste0(
+    sprintf(
+      paste(
+        "The following variables are missing from the model frame of `model`: %s.",
+        "It holds the terms of the model (%s), not the variables they are computed",
+        "from; pass the data the model was fitted to as `data`."
+      ),
+      paste(absent, collapse = ", "),
+      paste(terms_held, collapse = ", ")
+    ),
+    if (!is.null(also)) paste0(" ", also)
+  ))
+}
+
+#' The model context of a function that may evaluate a second formula
+#'
+#' [performCookWeisbergTest()] and [performNCVTest()] with `var_formula`,
+#' [performVarianceFormTest()] with `var_formula` or `against`, and [fitWLS()]
+#' with `var_formula`, read the variables of the formula from `data`; without
+#' one they read nothing from it. Either way `data` is matched to the
+#' observations of the fit by the alignment of the context, as for every test
+#' built on it (decision 31 of the design of the model context), and the
+#' variables of the formulas that are not columns of the model frame make it
+#' stricter for data taken in the order of the fit (`reads`,
+#' [rcontext_align()]); `.` reads every column.
+#'
+#' @param model The fitted model of the calling function.
+#' @param data The `data` argument of the calling function, or `NULL`.
+#' @param formulas A list of the second formulas of the call; `NULL` and
+#'   anything that is not a formula, such as `against = "squares"`, read
+#'   nothing.
+#' @param fn,test_label As in [rmodel_context()].
+#' @return The model context. A `data` that is neither a data frame nor `NULL`
+#'   is refused first, with the message of the tests computed from the model
+#'   alone ([rcheck_data_argument()]).
+#' @keywords internal
+#' @noRd
+rcontext_second_formula <- function(model, data, formulas, fn, test_label = fn) {
+  rcheck_data_argument(data, fn)
+  formulas <- Filter(function(f) inherits(f, "formula"), formulas)
+  reads <- unique(unlist(lapply(formulas, all.vars), use.names = FALSE))
+  if ("." %in% reads && is.data.frame(data)) {
+    reads <- union(setdiff(reads, "."), names(data))
+  }
+  rmodel_context(model, data, fn = fn, test_label = test_label, reads = reads)
+}
+
+#' The rows a second formula is evaluated on
+#'
+#' [performCookWeisbergTest()] and [performNCVTest()] with `var_formula`,
+#' [performVarianceFormTest()] with `var_formula` or `against`, and [fitWLS()]
+#' with `var_formula` evaluate a second, one-sided formula on the observations
+#' of the fit. Before 0.16.0 `fitWLS()` and the variance form test matched the
+#' rows of `data` to them by row name, and, when no name matched and the counts
+#' agreed, by position, unchecked, so a tibble in another order than the fit
+#' gave another value without an error (B9 of the design of the model
+#' context); and a variable the formula names was looked for in the
+#' environment of the formula, the workspace, when neither `data` nor the
+#' model frame held it, without any check of its order (R3).
+#'
+#' The rows are now those the alignment confirmed, in the order of the fit
+#' ([rcontext_rows()]), for a context built with `data`; without `data`, the
+#' model frame. Every variable the formula names must be a column of them:
+#' without `data`, one the model frame holds under its own name (M1
+#' otherwise, decision 9); with `data`, a column of `data` (the message of
+#' `data` otherwise). The functions of the formula, such as `log()` or `I()`,
+#' are then found in its environment, and so are its constants: a name that
+#' is not a column and whose value, found from the environment of the formula
+#' as `eval()` finds it, is an atomic vector of length one, as `k` in
+#' `~ I(hp^k)` or `pi` ([rformula_constants()]). A constant has no rows that
+#' could be read in another order than the fit; a value of any other length is
+#' a variable, and refused. `.` stands for every column, as before.
+#'
+#' @param ctx The model context, built with `data` when it is given.
+#' @param data The `data` argument of the calling function, or `NULL`.
+#' @param formula The one-sided formula.
+#' @param arg Character scalar, the argument that gives it, for messages.
+#' @return A data frame with one row per observation of the fit, in its order.
+#' @keywords internal
+#' @noRd
+rcontext_formula_rows <- function(ctx, data, formula, arg = "var_formula") {
+  needed <- setdiff(all.vars(formula), ".")
+  if (is.null(data)) {
+    absent <- setdiff(needed, names(ctx$frame))
+    absent <- setdiff(absent, rformula_constants(formula, absent))
+    if (length(absent) > 0L) {
+      # "supplied through `data`" is the message of 0.15.0, which the test
+      # suite pins.
+      rstop_missing_from_frame(ctx, absent, sprintf(
+        paste(
+          "Variables that are not part of the model must be supplied through `data`:",
+          "those of `%s` are not read from the workspace."
+        ),
+        arg
+      ))
+    }
+    plain <- as.data.frame(ctx$frame)
+    attr(plain, "terms") <- NULL
+    return(plain)
+  }
+  if (is.null(ctx$rows)) {
+    rstop_model_context("Internal error: `data` was not matched to the observations of the fit.")
+  }
+  absent <- setdiff(needed, names(data))
+  absent <- setdiff(absent, rformula_constants(formula, absent))
+  if (length(absent) > 0L) {
+    rvalidateDataInputs(data, required_vars = absent, min_obs = 0L)
+  }
+  rcontext_rows(ctx, data)
+}
+
+#' The constants of a second formula
+#'
+#' R3 and decision 9 of the design of the model context concern the variables
+#' of a second formula, which have one value per observation and so an order
+#' that can differ from the fit's. A name of the formula that is not a column
+#' of `data` or of the model frame, and whose value, found from the
+#' environment of the formula and its enclosures as `eval()` finds it, is an
+#' atomic vector of length one, such as `k <- 2` in `~ I(hp^k)` or `pi`, is a
+#' constant: it has no rows, and is evaluated as R evaluates it. A function is
+#' not a variable, and `all.vars()` does not name the functions a formula calls
+#' (`I`, `log`); a value of any other length, a vector of the workspace with
+#' one value per observation among them, is a variable.
+#'
+#' @param formula The one-sided formula.
+#' @param names Character vector, the names of the formula that are not
+#'   columns.
+#' @return The names among `names` that are constants.
+#' @keywords internal
+#' @noRd
+rformula_constants <- function(formula, names) {
+  env <- environment(formula)
+  if (is.null(env) || length(names) == 0L) {
+    return(character())
+  }
+  constant <- vapply(names, function(v) {
+    value <- get0(v, envir = env, inherits = TRUE)
+    !is.null(value) && is.atomic(value) && length(value) == 1L
+  }, logical(1))
+  names[constant]
+}
+
+#' Check that the fit reproduces itself
+#'
+#' The parts of the context must have one value per fitted observation, the
+#' rows of `data` must be distinct, and, but for a `MASS::rlm()` fit, whose
+#' residuals are those of an M-estimate, the fit must be the least-squares fit
+#' it says it is: its response must be its design times its coefficients, plus
+#' its offset, plus its residuals, and its residuals must be orthogonal to the
+#' columns of its design in the metric of its weights. A fit whose residuals,
+#' coefficients or weights were changed after the fit is refused. The two are
+#' checked relative to the size of their terms, so that a fit that is merely
+#' ill-conditioned, or of a response near `1e15`, passes: least squares by a
+#' QR decomposition makes errors of the order of the machine precision times
+#' those sizes, far below the tolerances.
+#'
+#' The orthogonality allows, besides `1e-6` of the norms of the column and of
+#' the residuals, a rounding term that grows with the size of the response,
+#' \eqn{\epsilon\, n\, \|X_j\|_W \|y\|_W}: a Gaussian `glm` computes its
+#' residuals as \eqn{y - \hat\mu}, which shifts them all by about
+#' \eqn{\epsilon |\bar y|}, so a response near `1e11` with a residual standard
+#' deviation of 2 leaves scores that the first term alone refuses. In a sweep of
+#' `lm` and Gaussian `glm` fits with 120 to 10,000 observations and responses
+#' up to `1e14`, the largest score of a valid fit was 0.04 of that term. A
+#' `mgcv::gam()` fit is penalised, so its residuals are not orthogonal to its
+#' design, and only its first check is made. An edited coefficient leaves the
+#' residuals unchanged, so only the first check sees it, at `1e-7` of the
+#' largest term: an edit of 0.5 goes undetected once the response is above
+#' about `1e7`. The checks guard against accidental edits; they are not a proof
+#' that a fit is unedited.
+#'
+#' The tests call it after [rvalidateModelInputs()], which refuses residuals
+#' and coefficients that are not finite with its own messages. Its refusals
+#' are final in the runners, as every refusal of the context is.
+#'
+#' @param ctx The model context.
+#' @param tol Relative tolerance of the first check; the second uses `1e-6`.
+#' @return `ctx`, invisibly.
+#' @keywords internal
+#' @noRd
+rvalidate_model_context <- function(ctx, tol = 1e-7) {
+  n <- length(ctx$residuals)
+  lengths_of <- c(
+    length(ctx$obs_id), length(ctx$response), length(ctx$fitted), NROW(ctx$design),
+    length(ctx$weights %||% ctx$residuals), length(ctx$offset %||% ctx$residuals),
+    vapply(ctx$variables, NROW, integer(1)), length(ctx$rows %||% ctx$residuals)
+  )
+  if (any(lengths_of != n)) {
+    rstop_model_context("Internal error: the parts of the model context differ in length.")
+  }
+  if (anyDuplicated(ctx$rows) > 0L) {
+    rstop_model_context(
+      "Internal error: two observations of the fit were matched to one row of `data`."
+    )
+  }
+  if (identical(ctx$kind, "rlm") || n == 0L) {
+    return(invisible(ctx))
+  }
+  coefs <- stats::coef(ctx$model)
+  keep <- !is.na(coefs)
+  X <- ctx$design[, keep, drop = FALSE]
+  b <- unname(coefs[keep])
+  offset <- ctx$offset %||% 0
+  e <- unname(ctx$residuals)
+  y <- unname(ctx$response)
+  linear <- drop(X %*% b) + offset
+  size <- max(abs(y), drop(abs(X) %*% abs(b)) + abs(offset), abs(e))
+  error <- max(abs(y - linear - e))
+  if (!isTRUE(error <= tol * size)) {
+    rstop_model_context(paste0(
+      "The fitted model does not reproduce its residuals from its design and coefficients: ",
+      "it was changed after the fit. Refit the model."
+    ))
+  }
+  if (identical(ctx$kind, "gam")) {
+    return(invisible(ctx))
+  }
+  w <- ctx$weights %||% rep(1, n)
+  # Norms scaled by the largest value, so that a residual near 1e-200 or a
+  # design value near 1e200 does not underflow or overflow.
+  norm_w <- function(v) {
+    top <- max(abs(v))
+    if (!is.finite(top) || top == 0) top else top * sqrt(sum(w * (v / top)^2))
+  }
+  scores <- abs(drop(crossprod(X, w * e)))
+  columns <- vapply(seq_len(ncol(X)), function(j) norm_w(X[, j]), numeric(1))
+  bound <- columns * (1e-6 * norm_w(e) + .Machine$double.eps * n * norm_w(y))
+  if (length(scores) > 0L && !isTRUE(all(scores <= bound))) {
+    rstop_model_context(paste0(
+      "The weights of the model are not those its coefficients were fitted with: ",
+      "it was changed after the fit. Refit the model."
+    ))
+  }
+  invisible(ctx)
+}
+
+#' A vector of the fit without the padding of `na.exclude`
+#'
+#' `residuals()` and `fitted()` of a fit with `na.action = na.exclude` hold
+#' an `NA` for each row the fit dropped; the context has one value per fitted
+#' observation.
+#'
+#' @param ctx The model context.
+#' @param x A vector, padded or not.
+#' @return `x` without the padded elements.
+#' @keywords internal
+#' @noRd
+rcontext_unpad <- function(ctx, x) {
+  if (inherits(ctx$na_action, "exclude") && length(x) > length(ctx$residuals)) {
+    return(x[-ctx$na_action])
+  }
+  x
+}
+
+#' The residuals the tests read
+#'
+#' The Pearson residuals of [rpearson_residuals()], without the padding of
+#' `na.exclude`: on an unweighted fit the residuals, on a weighted one
+#' \eqn{\sqrt{w_i}\, e_i}. A fit with a zero weight is refused there, as
+#' before.
+#'
+#' @param ctx The model context.
+#' @return Numeric vector, one value per observation, named by observation.
+#' @keywords internal
+#' @noRd
+rcontext_pearson <- function(ctx) {
+  rcontext_unpad(ctx, rpearson_residuals(ctx$model))
+}
+
+#' The fitted mean, computed from the coefficients
+#'
+#' The fitted values of the fit, the linear predictor with the total offset,
+#' one value per observation, in the order of the fit and without the padding
+#' of `na.exclude`: for an `lm`, a `fitWLS()` fit, a `MASS::rlm()` fit and an
+#' `mgcv::gam()` fit, the design times the coefficients that were not aliased,
+#' in the order of the pivot of the fit, plus the offset, as
+#' `stats::predict.lm()` computes it; for a Gaussian `glm`, its fitted values.
+#' They are what `fitted()` holds, and so what `predict(type = "response")`
+#' returns without new data, except on an `mgcv::gam()` fit with an offset
+#' given as the `offset` argument, which `predict.gam()` leaves out (its
+#' documentation says so) and `fitted()` includes. Unlike the fitted values an
+#' `lm` stores, \eqn{y - e}, which equal them up to rounding, observations with
+#' the same design row get the same value, so that their rounding errors,
+#' which depend on the residuals, do not order them.
+#'
+#' @param ctx The model context.
+#' @return Numeric vector, one value per observation.
+#' @keywords internal
+#' @noRd
+rcontext_mean <- function(ctx) {
+  if (identical(ctx$kind, "glm_gaussian")) {
+    return(unname(ctx$fitted))
+  }
+  coefs <- stats::coef(ctx$model)
+  pivot <- ctx$model$qr$pivot
+  used <- if (!is.null(pivot) && length(ctx$rank) == 1L) {
+    pivot[seq_len(ctx$rank)]
+  } else {
+    which(!is.na(coefs))
+  }
+  mean <- drop(ctx$design[, used, drop = FALSE] %*% coefs[used])
+  if (!is.null(ctx$offset)) {
+    mean <- mean + ctx$offset
+  }
+  unname(mean)
+}
+
+#' Refuse an extra variable that is missing at an observation of the fit
+#'
+#' A test that reads a variable of `data` besides the model, such as the
+#' variable it orders by, groups by or regresses on, needs its value at every
+#' observation of the fit. Before 0.16.0 the tests dropped the rows of `data`
+#' with a missing value and then lacked those rows; they still refuse them,
+#' with the message they gave, which now also names the variable (decided on
+#' 2026-10-18).
+#'
+#' @param ctx The model context.
+#' @param values The variable, one value per observation
+#'   ([rcontext_variables()]).
+#' @param variable Character scalar, the name of the variable.
+#' @param argument Character scalar, the argument of the test that names it.
+#' @param test_label Character scalar naming the test.
+#' @param ids The names of the observations `values` holds: those of the fit,
+#'   or, for a fit with `na.exclude` that [performPesaranTest()] reads by
+#'   position, the row names of `data`.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rstop_missing_variable <- function(ctx, values, variable, argument, test_label,
+                                   ids = ctx$obs_id) {
+  absent <- if (is.matrix(values) || is.data.frame(values)) {
+    !stats::complete.cases(values)
+  } else {
+    is.na(values)
+  }
+  if (!any(absent)) {
+    return(invisible(NULL))
+  }
+  stop(
+    sprintf(
+      paste0(
+        "%s requires `data` to contain the rows used to fit the model. Missing rows: %s, ",
+        "where %s, the `%s` variable, is missing."
+      ),
+      test_label, paste(utils::head(ids[absent], 3L), collapse = ", "), variable, argument
+    ),
+    call. = FALSE
+  )
+}
+
+#' The design of the fit without its aliased columns
+#'
+#' @param ctx The model context.
+#' @return The design matrix of the fit, without the columns of a
+#'   rank-deficient fit that it aliased ([rnon_aliased_columns()]).
+#' @keywords internal
+#' @noRd
+rcontext_design <- function(ctx) {
+  rnon_aliased_columns(ctx$design, ctx$model)
+}
+
+#' The rows of `data` that hold the observations, in the order of the fit
+#'
+#' What a test hands to its checks of the data, and to a test it calls in turn:
+#' the rows of `data` the alignment confirmed, one per observation, in the
+#' order of the fit and under the names of its observations
+#' ([rdata_with_fit_rows()]), or the model frame without `data`.
+#'
+#' @param ctx The model context.
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @return A data frame with one row per observation.
+#' @keywords internal
+#' @noRd
+rcontext_rows <- function(ctx, data) {
+  if (is.null(data)) {
+    return(ctx$frame)
+  }
+  rdata_with_fit_rows(data[ctx$rows, , drop = FALSE], ctx$obs_id)
+}
+
+#' The residuals and the rows of a group test, without the observations
+#' whose group is missing
+#'
+#' The five group tests, [performLeveneTest()], [performBrownForsytheTest()],
+#' [performFlignerKilleenTest()], [performBartlettTest()] and
+#' [performOBrienTest()], compare the Pearson residuals of the fit across the
+#' groups of a variable of `data`. Before 0.16.0 each matched the rows of
+#' `data` to the residuals itself, by row name, or by position when the
+#' residuals carry no names, as those of an `mgcv::gam()` fit (N17), and then
+#' left out the observations whose group, or a variable of the model, is
+#' missing in `data`, with the warning "Removed N observations due to missing
+#' values in ...". The rows are now those the alignment confirmed, in the
+#' order of the fit, or the model frame without `data`; the observations left
+#' out, and the warning, are those of before, computed on the same rows by
+#' [rhandleMissingValues()].
+#'
+#' Without `data` the group is read from the model frame, which holds it only
+#' when it is a variable of the model under its own name (M1 otherwise,
+#' [rcontext_variables()]); `data` that lack it are refused with the message of
+#' `data`. A fit with a zero weight is refused next, by [rcontext_pearson()],
+#' as before.
+#'
+#' @param ctx The model context.
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @param group Character scalar, the name of the grouping variable.
+#' @return A list with `residuals`, the Pearson residuals of the observations
+#'   kept, and `data`, the rows that hold them (of `data`, or of the model
+#'   frame without `data`), in the order of the fit.
+#' @keywords internal
+#' @noRd
+rcontext_group_rows <- function(ctx, data, group) {
+  rcontext_variables(ctx, data, c(group = group))
+  residuals <- rcontext_pearson(ctx)
+  rows <- if (is.null(data)) ctx$frame else data[ctx$rows, , drop = FALSE]
+  # The variables of the model that the rows hold, and the group: all of the
+  # variables of the model when `data` holds them, which the tests required
+  # before 0.16.0, so the same rows are left out, with the same warning.
+  variables <- intersect(unique(c(all.vars(stats::terms(ctx$model)), group)), names(rows))
+  cleaned <- rhandleMissingValues(rows, variables = variables)
+  if (cleaned$removed_count > 0) {
+    residuals <- residuals[-cleaned$removed_cases]
+  }
+  list(residuals = residuals, data = cleaned$data)
+}
+
+#' The residuals and the columns of `data` that a panel test or the scatter
+#' diagnostic reads
+#'
+#' [performPesaranTest()], [performBPRandomEffectsTest()] and
+#' [performScatterDiagnostic()] read columns of `data` beside the residuals of
+#' the fit: the units and the periods of a panel, the variables the absolute
+#' residuals are correlated with. Before 0.16.0 they read the i-th row of
+#' `data` with the i-th residual, and from 0.15.0 refused `data` they could not
+#' show to be in the order of the fit (defects B3 and B4 of the design of the
+#' model context): rows with names of their own in another order, rows after
+#' those of the fit, and the data of a fit that dropped rows (B16). The
+#' columns are now read at the rows the alignment confirmed, in the order of
+#' the fit ([rcontext_variables()]), or without `data` from the model frame,
+#' and the residuals are the Pearson residuals of the fit
+#' ([rcontext_pearson()]), which refuses a zero weight, as before.
+#'
+#' A fit with `na.action = na.exclude` is read as before until the step of
+#' the model context that moves `na.exclude` (B13): its Pearson residuals,
+#' padded with `NA` at the rows the fit dropped, against the rows of `data`,
+#' or of the model frame, by position, which must then hold the rows of the
+#' fit in its order ([rcheck_data_in_fit_order()]).
+#'
+#' @param ctx The model context.
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @param columns Character vector of the columns the test reads; its names,
+#'   when given, name the elements of `columns` in the result.
+#' @param fn Character scalar naming the calling test.
+#' @param test_label Character scalar naming the test in the messages on rows
+#'   that `data` lacks.
+#' @return A list with `residuals`, the Pearson residuals, `columns`, a named
+#'   list of the columns, each with one value per residual, `ids`, the names
+#'   of the observations they hold (the row names of the rows read, for a fit
+#'   with `na.exclude`), and `padded`, `TRUE` for the residuals of a fit with
+#'   `na.exclude`, read as before.
+#' @keywords internal
+#' @noRd
+rcontext_columns_at_fit <- function(ctx, data, columns, fn, test_label) {
+  roles <- names(columns)
+  if (is.null(roles)) {
+    roles <- columns
+  }
+  roles[!nzchar(roles)] <- columns[!nzchar(roles)]
+  # Without `data`, a column the model frame does not hold under its own name
+  # is refused here (M1), for a fit with na.exclude too.
+  values <- rcontext_variables(ctx, data, stats::setNames(columns, roles))
+  if (inherits(ctx$na_action, "exclude")) {
+    rows <- if (is.null(data)) ctx$frame else data
+    rcheck_data_matches_model(ctx$model, rows, test_label)
+    residuals <- rpearson_residuals(ctx$model)
+    rcheck_data_in_fit_order(residuals, rows, fn, test_label)
+    values <- stats::setNames(lapply(columns, function(v) rows[[v]]), roles)
+    return(list(residuals = residuals, columns = values, ids = rownames(rows), padded = TRUE))
+  }
+  list(residuals = rcontext_pearson(ctx), columns = values, ids = ctx$obs_id, padded = FALSE)
+}
+
+#' Refuse a panel in which a unit holds two observations of one period
+#'
+#' [performPesaranTest()] arranges the residuals in a matrix of periods by
+#' units, one cell for each pair of `id` and `time`. A pair that holds two
+#' observations of the fit puts one of them in the cell of another period, and
+#' before 0.16.0 the statistic was computed so without an error. Such panels
+#' are refused (decision 13 of the design of the model context), with the
+#' class of the refusals of the context.
+#'
+#' @param id_values,time_values The units and the periods, one per
+#'   observation of the fit, without missing values.
+#' @param id,time Character scalars, the names of the two columns.
+#' @param fn Character scalar naming the calling test.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rstop_repeated_panel_cells <- function(id_values, time_values, id, time, fn) {
+  # One pass over the observations: each pair gets a number, the repeated
+  # numbers are found by duplicated(), and their observations counted by
+  # tabulate(). It counted each repeated pair with a scan of every
+  # observation, 18 s for the 40,000 repeated pairs of 120,000 observations.
+  key <- rpanel_cell_key(id_values, time_values)
+  repeated <- duplicated(key)
+  if (!any(repeated)) {
+    return(invisible(NULL))
+  }
+  # The pairs in the order in which they first repeat, each shown by its first
+  # observation, and the number of observations of each.
+  cells <- unique(key[repeated])
+  first <- match(cells, key)
+  counts <- tabulate(match(key, cells), nbins = length(cells))
+  shown <- utils::head(seq_along(cells), 3L)
+  listed <- paste(
+    sprintf("%s = %s and %s = %s (%d observations)", id, as.character(id_values[first[shown]]),
+            time, as.character(time_values[first[shown]]), counts[shown]),
+    collapse = "; "
+  )
+  if (length(cells) > 3L) {
+    listed <- sprintf("%s, and %d more", listed, length(cells) - 3L)
+  }
+  rstop_model_context(sprintf(
+    paste0(
+      "%s() needs one observation of the fit for each pair of `%s` and `%s`, and %d %s ",
+      "more than one: %s. The residuals are arranged in a matrix of periods by units, ",
+      "with one cell for each pair. Pass a panel with one row per unit and period."
+    ),
+    fn, id, time, length(cells), if (length(cells) == 1L) "pair holds" else "pairs hold", listed
+  ))
+}
+
+# The number of the cell of each observation in the matrix of periods by
+# units: the same number for the same pair of unit and period, a different
+# one for another, from the positions of the unit and the period among the
+# distinct values, exact in double precision up to 2^53 cells.
+rpanel_cell_key <- function(id_values, time_values) {
+  unit <- match(id_values, unique(id_values))
+  period <- match(time_values, unique(time_values))
+  (unit - 1) * max(c(period, 0L)) + period
+}
+
+#' Refuse an unbalanced panel on the reading of a fit with na.exclude
+#'
+#' [performPesaranTest()] arranges the residuals of a balanced panel in a
+#' matrix of periods by units. Before 0.16.0 a unit observed at fewer periods
+#' than the panel holds stopped the statistic ("number of items to replace is
+#' not a multiple of replacement length"), or, when its number of periods
+#' divides that of the panel, had its residuals recycled over the periods it
+#' lacks, and the test returned a wrong value without an error (N12 of the
+#' design of the model context). The fifth step of the model context refused
+#' such panels on every route (decided by the author on 2026-10-24); since the
+#' pull request of N12 the statistic of an unbalanced panel is computed from
+#' the periods each pair of units shares, as `plm::pcdtest()` computes it, and
+#' the refusal is left to a fit with `na.action = na.exclude`, whose padded
+#' residuals the test reads against the rows of `data` by position until the
+#' step that moves na.exclude (decision 29).
+#'
+#' @param id_values,time_values The units and the periods, one per
+#'   observation, without missing values or repeated pairs.
+#' @param id Character scalar, the name of the column of the units.
+#' @param fn Character scalar naming the calling test.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rstop_unbalanced_panel <- function(id_values, time_values, id, fn) {
+  # The periods of each unit, counted in one pass over its distinct pairs.
+  units <- sort(unique(id_values))
+  n_periods <- length(unique(time_values))
+  distinct <- !duplicated(rpanel_cell_key(id_values, time_values))
+  held <- tabulate(match(id_values[distinct], units), nbins = length(units))
+  short <- which(held < n_periods)
+  if (length(short) == 0L) {
+    return(invisible(NULL))
+  }
+  first <- short[1L]
+  rstop_model_context(sprintf(
+    paste0(
+      "%s() reads a fit with na.action = na.exclude by position, on a matrix of periods by ",
+      "units, and needs a balanced panel, every unit observed at the same periods; the ",
+      "panel of the rows of `data` is unbalanced: %d of its %d units %s observed at fewer ",
+      "of its %d periods, %s = %s at %d of them. Refit the model with na.action = na.omit: ",
+      "the statistic of an unbalanced panel is then computed from the periods each pair of ",
+      "units shares, as plm::pcdtest() computes it."
+    ),
+    fn, length(short), length(units), if (length(short) == 1L) "is" else "are", n_periods,
+    id, as.character(units[first]), held[first]
+  ))
+}
+
+#' Warn about the incomplete rows of `data`, dropping nothing
+#'
+#' The tests dropped the rows of `data` with a missing value in a variable of
+#' the model before matching the rest, with the warning "Removed N
+#' observations due to missing values in ...", which tests and users rely on.
+#' The context matches the rows first and drops nothing, since the fit already
+#' left those rows out; this gives the same warning on the same data.
+#'
+#' @param data The `data` argument of the calling test, or `NULL`.
+#' @param model The fitted model, or `NULL` to check the variables of `also`
+#'   alone, as [performCookWeisbergTest()] checked those of its `var_formula`.
+#' @param also Character vector of the other variables the test reads from
+#'   `data`, such as the `order_by` of [performGQTest()], which the tests
+#'   checked for missing values with those of the model.
+#' @return `NULL`, invisibly; called for the warning.
+#' @keywords internal
+#' @noRd
+rwarn_incomplete_rows <- function(data, model, also = character()) {
+  if (!is.data.frame(data)) {
+    return(invisible(NULL))
+  }
+  of_model <- if (is.null(model)) character() else all.vars(stats::terms(model))
+  variables <- intersect(unique(c(of_model, also)), names(data))
+  if (length(variables) == 0L) {
+    return(invisible(NULL))
+  }
+  n_removed <- sum(!stats::complete.cases(data[, variables, drop = FALSE]))
+  if (n_removed == 0L) {
+    return(invisible(NULL))
+  }
+  with_missing <- variables[vapply(variables, function(v) any(is.na(data[[v]])), logical(1))]
+  var_names <- paste(if (length(with_missing) > 0L) with_missing else variables, collapse = ", ")
+  .std_warning("missing_values_removed", var_names = var_names, n_removed = n_removed)
+  invisible(NULL)
+}
+
+#' The terms of a fit with more levels than observations per level
+#'
+#' The rule of [rwarn_small_groups()] is decided on the terms of the model,
+#' not on its variables, so that a variable left out of the formula, as in
+#' `y ~ . - id`, does not count, and an interaction counts by its cells. A term
+#' counts when it holds at least one factor or character variable: `subject`,
+#' `school:class` of a nested `school / class`, `a:b` of a crossed `a * b` or
+#' of `a:b` alone, a slope for each level, `x:subject`, or a variable such as
+#' `interaction(a, b)`. Its number of levels \eqn{L} is the number of distinct
+#' combinations of its factor and character variables among the observations
+#' the test reads, the rows of `frame`, and \eqn{n} is their number: more
+#' levels than observations per level, \eqn{L > n / L}, that is
+#' \eqn{L^2 > n}.
+#'
+#' The variables of a term are the rows of the `"factors"` matrix of the
+#' terms of the model, and they are matched to the columns of the model frame
+#' by position, which is their order in both, not by name: a name that needs
+#' backticks, such as `` `my subject` ``, is written with them in the matrix
+#' and without them in the frame.
+#'
+#' @param model The fitted model.
+#' @param frame The model frame, one row per observation the test reads.
+#' @return A data frame with one row per such term: its label (`term`), its
+#'   number of levels (`levels`) and the number of observations
+#'   (`observations`); zero rows when there is none.
+#' @keywords internal
+#' @noRd
+rsmall_groups <- function(model, frame) {
+  none <- data.frame(term = character(), levels = integer(), observations = integer(),
+                     stringsAsFactors = FALSE)
+  n <- NROW(frame)
+  model_terms <- tryCatch(stats::terms(model), error = function(e) NULL)
+  incidence <- attr(model_terms, "factors")
+  if (n == 0L || !is.matrix(incidence) || ncol(incidence) == 0L ||
+        nrow(incidence) > NCOL(frame)) {
+    return(none)
+  }
+  categorical <- vapply(seq_len(nrow(incidence)), function(i) {
+    x <- frame[[i]]
+    is.factor(x) || is.character(x)
+  }, logical(1))
+  levels <- vapply(seq_len(ncol(incidence)), function(j) {
+    held <- which(incidence[, j] > 0 & categorical)
+    if (length(held) == 0L) {
+      return(0L)
+    }
+    cells <- frame[, held, drop = FALSE]
+    nrow(unique(cells[stats::complete.cases(cells), , drop = FALSE]))
+  }, integer(1))
+  small <- as.numeric(levels)^2 > n
+  if (!any(small)) {
+    return(none)
+  }
+  data.frame(term = colnames(incidence)[small], levels = levels[small],
+             observations = as.integer(n), stringsAsFactors = FALSE)
+}
+
+#' Warn that a factor has more levels than observations per level
+#'
+#' White's, Koenker's and the Breusch-Pagan tests are not valid with fixed
+#' effects for small groups. Under normal errors, the squared residuals of a
+#' group of \eqn{T} observations vary between groups \eqn{T / (T - 1)} times as
+#' much as the auxiliary regression on the group dummies assumes, so the
+#' statistic exceeds its degrees of freedom by about \eqn{(G - 1) / (T - 1)}
+#' for \eqn{G} groups, an excess that grows with \eqn{G} at a fixed \eqn{T},
+#' while the spread of the reference distribution grows as
+#' \eqn{\sqrt{2 G}}. In the size study of `inst/validation/fixed-effects-size.R`
+#' the rule \eqn{G \le T}, at most as many levels as observations per level,
+#' kept the three tests within 2.5% to 7.5% at the 5% level in all but 1 of 69
+#' designs, and the size went to 1 as \eqn{G} grew at a fixed \eqn{T}.
+#'
+#' The tests give this warning on a fit with such a term ([rsmall_groups()])
+#' after they have computed their value, which it does not change, decided by
+#' the author on 2026-10-23. It has class `heteroTests_fixed_effects_warning`,
+#' so that it can be muffled by class, and carries the terms (`factors`), their
+#' numbers of levels and the number of observations. The caches of results and
+#' the runners keep it with the result and give it again once the result is
+#' stored (R/cache.R). A term that holds a factor only as a slope for each
+#' level, `x:subject`, counts too, as decided: there the tests rejected too
+#' rarely (0.1% to 2.8% at the 5% level,
+#' `inst/validation/fixed-effects-variants-size.R`), as White's test with the
+#' products of a few regressors does, so the message says that the p-value is
+#' unreliable, and in which direction it erred in the simulations.
+#'
+#' @param model The fitted model.
+#' @param frame The model frame, one row per observation the test reads.
+#' @param test Character scalar naming the test in the warning, such as
+#'   `"Koenker's test"`.
+#' @param topic Character scalar, the help page whose section *Fixed effects
+#'   for small groups* the warning points to.
+#' @return `NULL`, invisibly; called for the warning.
+#' @keywords internal
+#' @noRd
+rwarn_small_groups <- function(model, frame, test, topic) {
+  small <- rsmall_groups(model, frame)
+  if (nrow(small) == 0L) {
+    return(invisible(NULL))
+  }
+  n <- small$observations[1L]
+  per_level <- vapply(n / small$levels, function(v) format(round(v, 1)), character(1))
+  enumerate <- function(x) {
+    if (length(x) == 1L) {
+      return(x)
+    }
+    paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+  }
+  # A label that already holds backticks, `my subject`, is shown as it is.
+  quoted <- ifelse(grepl("`", small$term, fixed = TRUE), small$term,
+                   paste0("`", small$term, "`"))
+  what <- if (nrow(small) == 1L) {
+    sprintf("The term %s has %d levels", quoted, small$levels)
+  } else {
+    sprintf("The terms %s have %s levels", enumerate(quoted),
+            enumerate(as.character(small$levels)))
+  }
+  message <- sprintf(
+    paste0(
+      "%s for %d observations, %s per level: with fixed effects for small groups, more ",
+      "levels than observations per level, the p-value of %s is unreliable; in simulations ",
+      "it was usually far too small, and too large when the factor enters only as a slope ",
+      "per level (see 'Fixed effects for small groups' in ?%s)."
+    ),
+    what, as.integer(n), enumerate(per_level), test, topic
+  )
+  warning(structure(
+    class = c("heteroTests_fixed_effects_warning", "warning", "condition"),
+    list(message = message, call = NULL, factors = small$term, levels = small$levels,
+         observations = as.integer(n))
+  ))
+  invisible(NULL)
+}

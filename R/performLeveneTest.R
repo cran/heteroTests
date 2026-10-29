@@ -15,8 +15,20 @@
 #' the minimum sample-size and structure requirements.
 #'
 #' @param model A fitted [stats::lm] object supplying residuals for the test.
-#' @param data A [base::data.frame] containing the variables used in `model` and
-#'   the grouping factor.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default. The
+#'   residuals and weights are read from the fit itself, and `group` from the
+#'   rows of `data` that hold the observations of the fit; the observations
+#'   whose group is missing are left out, with a warning. Without `data` it is
+#'   read from the model frame of `model`, which holds it only when it is a
+#'   variable of the model under its own name (`x`, not `log(x)`); a grouping
+#'   variable the model does not use needs `data`. Since 0.16.0, data that are
+#'   given are matched to the observations of the fit: rows with row names of
+#'   their own by name, in any order; rows that only number themselves
+#'   (a tibble, a data.table, a data frame whose row names were reset) by the
+#'   row numbers of the fit, or in the order of the fit when they hold one row
+#'   per observation. The rows the fit dropped may be there or not. Data whose
+#'   rows cannot be shown to hold the observations of the fit are refused; see
+#'   [test_results].
 #' @param group Character scalar specifying the column in `data` that defines the
 #'   groups whose variances are compared.
 #'
@@ -43,20 +55,28 @@
 #' [performBrownForsytheTest()] for the median-based adaptation,
 #' [performFlignerKilleenTest()] for a rank-based alternative, and
 #' [performBartlettTest()] when normality can be assumed.
-performLeveneTest <- function(model, data, group) {
+performLeveneTest <- function(model, data = NULL, group) {
   test_label <- "Levene's test"
+  # The residuals and weights come from the fit; `data`, when given, is matched
+  # to its observations and checked (R/model_context.R). `group` is read from
+  # the rows of `data` that hold the observations, so data taken in the order
+  # of the fit must tell those rows apart when it is not a column of the model
+  # frame.
+  ctx <- rmodel_context(
+    model, data, fn = "performLeveneTest", test_label = test_label,
+    reads = if (!missing(group) && length(group) == 1L) as.character(group) else character()
+  )
 
-  rvalidateModelInputs(model, test_name = "Levene", min_obs = 15L)
+  rvalidateModelInputs(model, test_name = "Levene", min_obs = 15L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  if (missing(group) || length(group) != 1L) {
+  # An NA or empty name is refused here, before it reaches the checks of
+  # `data` (rcontext_group_rows()), as by performOBrienTest().
+  if (missing(group) || length(group) != 1L || is.na(group) || !nzchar(as.character(group))) {
     stop("`group` must be a single column name.", call. = FALSE)
   }
 
   group <- as.character(group)
-
-  model_terms <- stats::terms(model)
-  required_vars <- unique(c(all.vars(model_terms), group))
-  rvalidateDataInputs(data, required_vars = required_vars, min_obs = 15L)
 
   handle_validation_result <- function(result, warn_patterns = character()) {
     if (length(result$warnings) > 0) {
@@ -87,67 +107,18 @@ performLeveneTest <- function(model, data, group) {
     invisible(result)
   }
 
-  align_to_model <- function(raw_data, residuals) {
-    resid_names <- names(residuals)
-    data_rows <- rownames(raw_data)
-
-    if (!is.null(resid_names) && length(resid_names) > 0 && !is.null(data_rows)) {
-      match_idx <- match(resid_names, data_rows)
-      if (anyNA(match_idx)) {
-        missing_rows <- resid_names[is.na(match_idx)]
-        stop(
-          sprintf(
-            "%s requires `data` to contain the rows used to fit the model. Missing rows: %s",
-            test_label,
-            paste(utils::head(missing_rows, 3L), collapse = ", ")
-          ),
-          call. = FALSE
-        )
-      }
-      aligned_data <- raw_data[match_idx, , drop = FALSE]
-      list(data = aligned_data, residuals = residuals)
-    } else {
-      if (nrow(raw_data) != length(residuals)) {
-        stop(
-          sprintf(
-            "%s requires `data` with %d observations to match the fitted model, got %d.",
-            test_label,
-            length(residuals),
-            nrow(raw_data)
-          ),
-          call. = FALSE
-        )
-      }
-      list(data = raw_data, residuals = residuals)
-    }
-  }
-
-  aligned <- align_to_model(data, stats::residuals(model))
-  working_data <- aligned$data
-  residuals <- aligned$residuals
-
-  cleaned <- rhandleMissingValues(working_data, variables = required_vars)
-  if (cleaned$removed_count > 0) {
-    residuals <- residuals[-cleaned$removed_cases]
-  }
-  working_data <- cleaned$data
+  # The Pearson residuals of the fit and the rows of `data` that hold its
+  # observations, in the order of the fit, or the model frame without `data`;
+  # the observations whose group is missing are left out, with a warning, as
+  # before 0.16.0 (rcontext_group_rows()).
+  kept <- rcontext_group_rows(ctx, data, group)
+  working_data <- kept$data
+  residuals <- kept$residuals
 
   if (length(residuals) == 0 || nrow(working_data) == 0) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Levene test requires observations after removing missing data"
-    )
-  }
-
-  if (length(residuals) != nrow(working_data)) {
-    stop(
-      sprintf(
-        "%s could not align residuals with the cleaned data (expected %d rows, got %d).",
-        test_label,
-        length(residuals),
-        nrow(working_data)
-      ),
-      call. = FALSE
     )
   }
 
@@ -182,7 +153,7 @@ performLeveneTest <- function(model, data, group) {
 
   means <- tapply(residuals, grp, mean)
   if (any(!is.finite(means))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Levene test requires finite group means of residuals"
     )
@@ -190,7 +161,7 @@ performLeveneTest <- function(model, data, group) {
 
   centered <- means[grp]
   if (any(!is.finite(centered))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Levene test could not evaluate group means for all observations"
     )
@@ -199,7 +170,7 @@ performLeveneTest <- function(model, data, group) {
   z <- abs(residuals - centered)
 
   if (length(z) <= length(levels(grp))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Levene test requires observations to exceed the number of groups"
     )
@@ -215,7 +186,7 @@ performLeveneTest <- function(model, data, group) {
   p_value <- aov_table$`Pr(>F)`[1]
 
   if (!is.finite(F_stat) || !is.finite(df_num) || !is.finite(df_den)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Levene test auxiliary regression failed to produce finite statistics"
     )

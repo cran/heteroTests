@@ -10,7 +10,7 @@ test_that("checkModel errors on invalid input", {
 
 test_that("checkData errors on invalid input", {
   expect_error(
-    heteroTests:::checkData(1),
+    heteroTests:::.check_data(1),
     "Input data must be a data.frame; call as.data.frame() before running the diagnostic.",
     fixed = TRUE
   )
@@ -20,7 +20,7 @@ test_that("validateTestInputs detects small datasets", {
   df <- data.frame(x = 1:5, y = 1:5)
   model <- lm(y ~ x, data = df)
   err <- expect_error(
-    heteroTests:::validateTestInputs(model, df, "white", min_obs = 10),
+    heteroTests:::.validate_test_inputs(model, df, "white", min_obs = 10),
     "Input validation for white failed",
     fixed = FALSE
   )
@@ -31,10 +31,10 @@ test_that("validateTestInputs detects small datasets", {
   )
 })
 
-test_that("checkModelEnhanced warns on near-perfect fit", {
+test_that("checkModel(enhanced = TRUE) warns on near-perfect fit", {
   df <- data.frame(x = 1:10, y = 1:10)
   model <- lm(y ~ x, data = df)
-  expect_warning(heteroTests:::checkModelEnhanced(model), "Near-perfect fit")
+  expect_warning(heteroTests:::checkModel(model, enhanced = TRUE), "Near-perfect fit")
 })
 
 test_that("safe_var handles near-zero variance with warning", {

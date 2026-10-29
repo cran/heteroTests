@@ -6,7 +6,19 @@
 #' two-sample F distribution.
 #'
 #' @param model A fitted [stats::lm] object.
-#' @param data A [base::data.frame] used to fit `model`.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default. The
+#'   residuals and weights are read from the fit itself, and `group` from the
+#'   rows of `data` that hold the observations of the fit. Without `data` it is
+#'   read from the model frame of `model`, which holds it only when it is a
+#'   variable of the model under its own name (`x`, not `log(x)`); a grouping
+#'   variable the model does not use needs `data`. Since 0.16.0, data that are
+#'   given are matched to the observations of the fit: rows with row names of
+#'   their own by name, in any order; rows that only number themselves (a
+#'   tibble, a data.table, a data frame whose row names were reset) by the row
+#'   numbers of the fit, or in the order of the fit when they hold one row per
+#'   observation. The rows the fit dropped may be there or not. Data whose rows
+#'   cannot be shown to hold the observations of the fit are refused; see
+#'   [test_results].
 #' @param group Character scalar naming the grouping variable.
 #'
 #' @return An object of class \code{htest} with the Fmax statistic, the number of
@@ -54,29 +66,37 @@
 #' [performBartlettTest()] for a likelihood-based normal-theory test and
 #' [performLeveneTest()] and [performBrownForsytheTest()] for more robust
 #' group-variance comparisons.
-performHartleyFmaxTest <- function(model, data, group) {
+performHartleyFmaxTest <- function(model, data = NULL, group) {
   test_label <- "Hartley's Fmax test"
+  # The residuals and weights come from the fit; `data`, when given, is matched
+  # to its observations and checked (R/model_context.R). `group` is read from
+  # the rows of `data` that hold the observations, so data taken in the order
+  # of the fit must tell those rows apart when it is not a column of the model
+  # frame.
+  ctx <- rmodel_context(
+    model, data, fn = "performHartleyFmaxTest", test_label = test_label,
+    reads = if (!missing(group) && is.character(group)) group else character()
+  )
 
   if (!is.character(group) || length(group) != 1L || is.na(group) || !nzchar(group)) {
     stop("`group` must be supplied as a single column name.", call. = FALSE)
   }
 
-  rvalidateModelInputs(model, test_name = "Hartley Fmax", min_obs = 10L)
+  rvalidateModelInputs(model, test_name = "Hartley Fmax", min_obs = 10L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_terms <- stats::terms(model)
-  required_vars <- unique(c(all.vars(model_terms), group))
-
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = test_label,
-    min_obs_model = 10L,
-    min_obs_data = 10L
-  )
-
-  working_data <- prepared$data
-  residuals <- prepared$residuals
+  # The groups, one per observation in the order of the fit: from the
+  # confirmed rows of `data`, or without `data` from the model frame when it
+  # holds the variable under its own name (rcontext_variables()).
+  grp <- rcontext_variables(ctx, data, c(group = group))$group
+  rwarn_incomplete_rows(data, model, also = group)
+  # The Pearson residuals of the fit; a fit with a zero weight is refused
+  # there, as before 0.16.0.
+  residuals <- rcontext_pearson(ctx)
+  rstop_missing_variable(ctx, grp, group, "group", test_label)
+  # The rows of `data` that hold the observations, in the order of the fit,
+  # or the model frame: what the checks below read.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements(
     "hartley_fmax",
@@ -89,9 +109,8 @@ performHartleyFmaxTest <- function(model, data, group) {
 
   ht_log("INFO", "Running Hartley's Fmax test")
 
-  grp <- working_data[[group]]
   if (!is.factor(grp) && !is.character(grp)) {
-    std_error(
+    .std_error(
       "invalid_group_variable",
       group_var = group,
       min_groups = 2L
@@ -115,13 +134,13 @@ performHartleyFmaxTest <- function(model, data, group) {
   n_i <- tapply(residuals, grp, length)
 
   if (any(!is.finite(vars))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Hartley's Fmax test requires finite group variances"
     )
   }
   if (min(vars) <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Hartley's Fmax test requires positive variance within each group"
     )
@@ -129,7 +148,7 @@ performHartleyFmaxTest <- function(model, data, group) {
 
   k <- length(vars)
   if (k < 2L) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Hartley's Fmax test requires at least two groups"
     )
@@ -153,7 +172,7 @@ performHartleyFmaxTest <- function(model, data, group) {
   }
 
   if (!is.finite(df) || df <= 0) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Hartley's Fmax test requires positive variance degrees of freedom"
     )
@@ -163,7 +182,7 @@ performHartleyFmaxTest <- function(model, data, group) {
   p_value <- SuppDists::pmaxFratio(F_stat, df = df, k = k, lower.tail = FALSE)
 
   if (!is.finite(p_value) || p_value < 0 || p_value > 1) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Hartley's Fmax reference distribution failed to produce a valid p-value"
     )

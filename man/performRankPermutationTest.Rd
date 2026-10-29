@@ -6,7 +6,7 @@
 \usage{
 performRankPermutationTest(
   model,
-  data,
+  data = NULL,
   order_by = NULL,
   B = 999,
   progress = interactive()
@@ -16,15 +16,28 @@ performRankPermutationTest(
 \item{model}{A fitted \link[stats:lm]{stats::lm} object describing the mean structure whose
 residual variance is to be assessed.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} (or compatible object) containing the
-variables referenced in \code{model}. The data must include all observations used
-to fit \code{model} and should not contain unresolved missing values.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design, weights and offset are read from the fit itself, so
+a model that transforms its variables, has an \code{offset()} term, or takes
+its \code{weights} or \code{offset} from a column of the data needs no \code{data}, and
+the model frame of \code{model} is accepted as \code{data} (since 0.16.0; before,
+such models needed \code{data}), unless \code{order_by} names a variable the model
+frame does not hold, which is then read from \code{data}. Data that are given
+are matched to the observations of the fit: rows with row names of their
+own by name, in any order; rows that only number themselves (a tibble, a
+data.table, a data frame whose row names were reset) by the row numbers
+of the fit, or in the order of the fit when they hold one row per
+observation and, when \code{order_by} is read from \code{data}, no two rows of the
+fit tie on every column of its model frame. The rows the fit dropped may
+be there or not. Data whose rows cannot be shown to hold the observations
+of the fit are refused; see \link{test_results}.}
 
 \item{order_by}{Optional name of a predictor variable used to rank the
 observations. Defaults to the first non-intercept term in the model matrix.}
 
 \item{B}{Number of permutation replications used to approximate the null
-distribution.}
+distribution. Defaults to 999, the default of every resampling test in
+the package.}
 
 \item{progress}{Logical toggle for progress reporting during permutations.}
 }
@@ -36,6 +49,15 @@ correlation and a permutation-based p-value.
 Performs a non-parametric permutation test based on the rank correlation
 between absolute residuals and a chosen ordering variable. Significant
 correlations imply systematic changes in residual spread.
+}
+\section{Supported models}{
+It accepts an \code{lm} and a \code{glm} with the Gaussian family and the identity link, unweighted
+or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-deficient fit, which it
+tests on the estimable part of its design: it gives the value of the same model fitted without the
+aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
+fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
+lack rows or variables of the fit. Which model each test accepts, and why, is set out in
+\code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)

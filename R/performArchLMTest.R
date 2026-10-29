@@ -9,6 +9,13 @@
 #'   residual series \eqn{\hat{e}_t}. Objects must implement [stats::residuals]
 #'   and optionally [stats::model.frame] so that validation checks can align the
 #'   data with the stored residuals.
+#' @param data Optional data frame the model was fitted to. When `NULL`, the
+#'   default, the model frame of `model` is used. The statistic is computed
+#'   from the residuals of `model`, so `data` does not change the result; it is
+#'   accepted so that every test takes `(model, data, ...)`. Before 0.15.0 the
+#'   second argument was `lags`: a number passed there by position is still
+#'   read as `lags`, with a warning that shows the new call; that form stops
+#'   working in 1.0.0.
 #' @param lags A single positive integer giving the number of lagged squared
 #'   residuals \eqn{\hat{e}_{t-1}^2, \ldots, \hat{e}_{t-q}^2} included in the
 #'   auxiliary regression. Typical choices range from 1 to 12 for monthly data.
@@ -69,16 +76,29 @@
 #' [performMcLeodLiTest()] for the portmanteau alternative based on squared
 #' residual autocorrelations and [performPesaranTest()] when cross-sectional
 #' dependence is of interest.
-performArchLMTest <- function(model, lags = 1) {
+performArchLMTest <- function(model, data = NULL, lags = 1) {
+  rrefuse_non_gaussian_glm(model, "performArchLMTest")
+  if (is.numeric(data) && is.null(dim(data)) && missing(lags)) {
+    rwarn_positional_call("performArchLMTest", substitute(model), list(lags = substitute(data)))
+    lags <- data
+    data <- NULL
+  }
+  # The model context (R/model_context.R) refuses a model frame that
+  # `model = FALSE` rebuilt from data changed after the fit. The test reads
+  # nothing from `data`, which is matched to the observations of the fit as by
+  # every test built on the context (decision 31).
+  rcheck_data_argument(data, "performArchLMTest")
+  ctx <- rmodel_context(model, data, fn = "performArchLMTest", test_label = "ARCH LM")
   if (!is.numeric(lags) || length(lags) != 1L || is.na(lags) || lags < 1) {
     stop("`lags` must be a positive integer.", call. = FALSE)
   }
   lags <- as.integer(lags)
 
   min_required <- rTEST_REQUIREMENTS$arch_lm(lags)
-  rvalidateModelInputs(model, test_name = "ARCH LM", min_obs = min_required)
+  rvalidateModelInputs(model, test_name = "ARCH LM", min_obs = min_required, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_data <- tryCatch(stats::model.frame(model), error = function(e) NULL)
+  model_data <- ctx$frame
   requirements <- rvalidateTestRequirements("arch_lm", model = model, data = model_data, lags = lags)
   rprocessValidationResult(requirements)
 
@@ -94,9 +114,9 @@ performArchLMTest <- function(model, lags = 1) {
 
   ht_log("INFO", "Running ARCH LM test")
 
-  res2 <- stats::residuals(model)^2
+  res2 <- rpearson_residuals(model)^2
   if (stats::var(res2) <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "ARCH LM test requires variability in squared residuals"
     )
@@ -118,7 +138,7 @@ performArchLMTest <- function(model, lags = 1) {
   test_statistic <- length(y) * r2
   df <- lags
   if (df <= 0) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "ARCH LM auxiliary regression requires positive degrees of freedom"
     )

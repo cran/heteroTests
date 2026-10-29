@@ -2,40 +2,108 @@
 \alias{runHeteroTests}
 \title{Run multiple heteroscedasticity diagnostics}
 \description{Convenience wrapper that executes several heteroscedasticity tests on a fitted linear model.}
-\details{By default runs \code{\link{performWhiteTest}} and \code{\link{performBPTest}}, but additional tests can be requested. Custom diagnostics registered via \code{registerDiagnostic} are also available.}
+\details{By default runs \code{\link{performWhiteTest}} and \code{\link{performKoenkerTest}}, the studentized
+Breusch-Pagan test, but additional tests can be requested. Custom diagnostics registered via \code{registerDiagnostic}
+are also available.
+
+Up to 0.14.0 the default was \code{c("white", "breusch_pagan")}, whose second test is the classical Breusch-Pagan
+statistic of \code{\link{performBPTest}}. That statistic divides by \eqn{2 \hat\sigma^4}{2 sigma^4}, the variance of
+the squared errors only when they are normal. In the full sweep of \code{inst/validation/}, with 150 observations and
+400 replications, it rejected a true null hypothesis 28.75\% of the time at the 5\% level when the errors had a
+\eqn{t_5}{t5} distribution, against 4.75\% for Koenker's statistic. The classical test is still run by name,
+\code{tests = "breusch_pagan"}.
+
+When a test stops with an error, the substitute registered for it is run, if one is and it succeeds, and its result
+is returned under the name of the test asked for: \code{"white"} falls back on White's test without cross products,
+the classical Breusch-Pagan, Koenker and Cook-Weisberg tests, \code{"koenker"} on the Cook-Weisberg test. The
+\code{method} of the result names the test that ran, \code{attr(result, "diagnostic")} its registry name and
+\code{attr(result, "extras")$status} is \code{"fallback"}. A weighted fit whose weights are a column of the data,
+called without \code{data}, is such a case: White's and Koenker's tests stop, and both names hold the Cook-Weisberg
+test. Pass \code{data} for such a fit.
+
+The runner runs the exact tests unless \code{chunk_threshold_mb} asks for the streaming ones,
+\code{\link{performWhiteTestStreaming}()}, \code{\link{performBPTestStreaming}()} and
+\code{\link{performKoenkerTestStreaming}()}. Up to 0.15.0 it switched to them by itself on data above 100 MB, and
+\code{\link{performWhiteTest}()}, \code{\link{performBPTest}()} and \code{\link{performKoenkerTest}()} did so on their
+own. Streaming saves memory mainly in White's test, whose auxiliary design is several times wider than the model
+matrix; the auxiliary design of the Breusch-Pagan and Koenker tests is the model matrix itself. And the streaming White
+test stops on any model with a factor or a \code{poly()} term, whose squares are collinear with the other terms of its auxiliary regression, so that above 100 MB such
+a model got a fallback under the name \code{"white"} where smaller data got White's test.}
 \usage{
 runHeteroTests(
   model,
   data = NULL,
-  tests = c("white", "breusch_pagan"),
+  tests = c("white", "koenker"),
   use_cache = TRUE,
-  chunk_threshold_mb = 100,
+  chunk_threshold_mb = Inf,
   chunk_size = 10000,
   progress = interactive()
 )
 }
 \arguments{
-  \item{model}{an object of class \code{lm}.}
-  \item{data}{optional data frame used to fit \code{model}. If omitted, \code{model.frame(model)} is used.}
-  \item{tests}{character vector of test names to run. Supported values are any names registered via \code{registerDiagnostic}.}
-  \item{use_cache}{logical indicating whether cached results should be reused when available. Requires the \pkg{digest}
-  package and defaults to \code{TRUE}.}
-  \item{chunk_threshold_mb}{numeric threshold (in megabytes) above which streaming implementations are preferred for supported
-  diagnostics.}
-  \item{chunk_size}{integer number of observations processed per chunk when streaming diagnostics.}
+  \item{model}{a fitted \code{lm}, or a \code{glm} with the Gaussian family and the identity link, a model
+  formula, a tidymodels workflow or a parsnip model fit. The tests refuse a \code{glm} of any other family or link
+  since 0.15.0, the deprecated registry names \code{"ncv"} and \code{"student_bp"} and the substitutes of the
+  fallback (Details) included: the call stops with the error of the first test asked for, and with grouped data
+  each test is returned as failed.}
+  \item{data}{optional data frame used to fit \code{model}. If omitted, \code{model.frame(model)} is used, which
+  serves only the tests that find what they need there (see their \code{data} argument). With
+  data grouped by \code{dplyr::group_by()} the model is refitted within each group by evaluating its own call on that
+  group, so every variable it uses, including weights, offset and subset, must be a column of \code{data}.}
+  \item{tests}{character vector of test names to run: any of the names \code{\link{listDiagnostics}()} returns, which
+  include those added with \code{registerDiagnostic}. On a fit returned by \code{\link{fitWLS}()} the resampling tests
+  \code{"wild_bootstrap"} and \code{"white_bootstrap"} estimate the weights again in each replicate, as
+  \code{\link{performWildBootstrapTest}()} and \code{\link{performWhiteTestBootstrap}()} do by default since 0.15.0; to hold
+  them fixed, call those functions with \code{reestimate_weights = FALSE}.}
+  \item{use_cache}{logical: reuse the results of an earlier call on the same inputs? Requires the \pkg{digest}
+  package and defaults to \code{TRUE}. Only deterministic tests are cached, under a key that holds the test and the
+  parts of the model and the data it reads (see \code{\link{cachedTest}}, which also says what the key leaves out):
+  the resampling tests \code{"wild_bootstrap"}, \code{"white_bootstrap"}, \code{"rank_permutation"} and
+  \code{"spatial_hetero"}, and diagnostics added with \code{registerDiagnostic}, run on every call, and a call that
+  runs one, or falls back on one, is not stored as a whole. A seeded call returns what it returns with
+  \code{use_cache = FALSE}, \code{identical()}, and leaves the random number generator where it leaves it. Each test
+  is kept in the cache of \code{\link{cachedTest}}, and each call whose tests are all deterministic in a second cache
+  (\code{\link{clearAnalysisCache}}); each holds at most \code{getOption("heteroTests.cache_size", 100)} results and
+  drops the one used least recently, and \code{options(heteroTests.cache_size = 0)} turns both off. The checks the
+  tests make first have a cache of their own, bounded by \code{getOption("heteroTests.validation_cache_size", 1000)}.
+  Before 0.16.0 the resampling tests were cached too, and two fits with the same coefficients and residuals shared
+  their results.}
+  \item{chunk_threshold_mb}{size of \code{data} in megabytes above which \code{"white"}, \code{"breusch_pagan"} and
+  \code{"koenker"} are run by their streaming forms. The default, \code{Inf}, never streams: give a finite value to ask
+  for them, such as \code{100}, or \code{0} for data of any size. The result of a streaming test has
+  \code{attr(, "extras")$streaming} set to \code{TRUE}. Up to 0.15.0 the default was \code{100}. A warning about the
+  size of the data is given above half the threshold, or above 50 MB with the default.}
+  \item{chunk_size}{integer number of observations processed per chunk when the streaming tests run
+  (\code{chunk_threshold_mb}).}
   \item{progress}{logical flag controlling whether textual progress bars are displayed when running multiple diagnostics.}
 }
-\value{A named list of \code{htest} objects.}
+\value{A \code{\link{hetero_test_suite}}: a named list of \code{htest} objects, one for each test asked for,
+which prints as a table of the tests, and whose \code{summary()} is laid out as that of an \code{lm} (see
+\code{\link{summary.hetero_test_suite}}). With grouped data, a \code{\link{hetero_grouped_suite}} holding one such
+suite for each group. Since 0.16.0 a suite whose model the runner fitted itself, from a formula, to the data of
+a survey design or within a group, says so in \code{attr(, "model_origin")} (\code{"formula"}, \code{"survey"} or
+\code{"group"}; see \code{\link{hetero_test_suite}}).
+
+A result whose \code{data.name} is \code{"model"} reports the formula of the model instead, as Koenker's test and
+the others do. Up to 0.15.0 five tests reported \code{"model"} here, the name of the argument of the function the
+registry calls them with: White's test, its bootstrap and its form without cross products, the studentized
+Breusch-Pagan statistic and Szroeter's test. Any other \code{data.name}, such as that of a diagnostic added with
+\code{registerDiagnostic}, is kept. Called directly, a test still names the object it is given:
+\code{performWhiteTest(m, mtcars)$data.name} is \code{"m"}.}
 \examples{
 data(mtcars)
 m <- lm(mpg ~ wt + qsec, data = mtcars)
-# Default: White and Breusch-Pagan
+# Default: White and Koenker
 runHeteroTests(m, mtcars)
-# Specify additional diagnostics
-runHeteroTests(m, mtcars, tests = c("white", "koenker", "ncv"))
+# Laid out as summary.lm() is, with the significance codes
+summary(runHeteroTests(m, mtcars))
+# Specify additional diagnostics, or the classical Breusch-Pagan test
+runHeteroTests(m, mtcars, tests = c("white", "koenker", "cook_weisberg"))
+runHeteroTests(m, mtcars, tests = "breusch_pagan")
 custom <- function(model, data) list(stat = 1)
 registerDiagnostic("custom", custom)
 runHeteroTests(m, mtcars, tests = c("white", "custom"))
 }
 \references{White, H. (1980). A heteroskedasticity-consistent covariance matrix estimator and a direct test for heteroskedasticity. \emph{Econometrica}, 48(4), 817--838.
-Breusch, T. S., & Pagan, A. R. (1979). A Simple Test for Heteroscedasticity and Random Coefficient Variation. \emph{Econometrica}, 47(5), 1287--1294.}
+Breusch, T. S., & Pagan, A. R. (1979). A Simple Test for Heteroscedasticity and Random Coefficient Variation. \emph{Econometrica}, 47(5), 1287--1294.
+Koenker, R. (1981). A note on studentizing a test for heteroscedasticity. \emph{Journal of Econometrics}, 17(1), 107--112. \doi{10.1016/0304-4076(81)90062-2}}

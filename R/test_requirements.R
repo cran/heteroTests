@@ -29,6 +29,10 @@ rTEST_REQUIREMENTS <- list(
   park = list(min_obs = 10L, reason = "Log transformation requires minimum sample"),
   glejser = list(min_obs = 12L, reason = "Auxiliary regression requires enough observations"),
   harvey = list(min_obs = 15L, reason = "Log-variance regression requires residual degrees of freedom"),
+  variance_form = list(
+    min_obs = 30L,
+    reason = "Variance function and specification regression are both estimated"
+  ),
   spearman = list(min_obs = 10L, reason = "Correlation test requires adequate sample size"),
   levene = list(min_obs_per_group = 5L, reason = "Group ANOVA needs sufficient observations"),
   brown_forsythe = list(min_obs_per_group = 5L, reason = "Median-based variance test needs adequate group sizes"),
@@ -38,6 +42,10 @@ rTEST_REQUIREMENTS <- list(
   obrien = list(min_obs_per_group = 3L, reason = "O'Brien transformation contains n_i - 2 in the denominator"),
   studentized_bp = list(min_obs = 15L, reason = "Studentized auxiliary regression requires adequate sample"),
   szroeter = list(min_obs = 15L, reason = "Rank-based statistic requires enough ordered observations"),
+  harrison_mccabe = list(
+    min_obs = 10L,
+    reason = "Each part of the ordered sample needs observations beyond the coefficients"
+  ),
   bootstrap_tests = list(min_obs = 50L, reason = "Bootstrap needs adequate base sample"),
   wild_bootstrap = list(min_obs = 30L, reason = "Wild bootstrap multipliers require stable auxiliary regression"),
   quantile_regression = list(min_obs = 40L, reason = "Quantile comparisons require sufficient data per quantile"),

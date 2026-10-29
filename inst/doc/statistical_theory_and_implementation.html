@@ -417,15 +417,13 @@ matrix has full rank and warns when a large number of regressors may
 destabilise the statistic.</li>
 </ul>
 <div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>white_result <span class="ot">&lt;-</span> <span class="fu">performWhiteTest</span>(model, quakes)</span>
-<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="co">#&gt; [INFO] Running White test</span></span>
-<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt; [INFO] White test completed: statistic = 125.558 df = 5 p = 0</span></span>
-<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>white_result</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>white_result</span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt;  White&#39;s test for heteroscedasticity</span></span>
 <span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt;  White&#39;s test for heteroscedasticity</span></span>
-<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; data:  model</span></span>
-<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; X-squared = 125.56, df = 5, p-value &lt; 2.2e-16</span></span>
-<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: heteroscedasticity present</span></span></code></pre></div>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; data:  model</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; X-squared = 125.56, df = 5, p-value &lt; 2.2e-16</span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: heteroscedasticity present</span></span></code></pre></div>
 <p>The small <span class="math inline">\(p\)</span>-value rejects
 homoskedasticity, confirming the visual pattern. The <code>htest</code>
 object stores the LM statistic and degrees of freedom, making it easy to
@@ -434,43 +432,47 @@ compare with bootstrap or robust variants.</p>
 <div id="breuschpagan-test" class="section level2">
 <h2>Breusch–Pagan test</h2>
 <p>Breusch and Pagan (1979) derived a Lagrange Multiplier (LM) test for
-variance patterns linear in the regressors. Denote by <span class="math inline">\(X\)</span> the regressor matrix without intercept.
-The statistic is <span class="math display">\[
-\text{LM} = \frac{1}{2\sigma^2} \widehat{e}^\top X(X^\top X)^{-1}X^\top
-\widehat{e},
-\]</span> which is equivalent to <span class="math inline">\(nR^2\)</span> from regressing <span class="math inline">\(\widehat{e}^2\)</span> on <span class="math inline">\(X\)</span>. The test converges to a <span class="math inline">\(\chi^2_{k}\)</span> distribution, where <span class="math inline">\(k\)</span> is the number of non-intercept
+variance patterns linear in the regressors. With <span class="math inline">\(\widehat{\sigma}^2 = n^{-1}\sum_i
+\widehat{e}_i^2\)</span>, regress <span class="math inline">\(g_i =
+\widehat{e}_i^2 / \widehat{\sigma}^2\)</span> on an intercept and the
+regressors. The statistic is half the explained sum of squares of that
+regression, <span class="math display">\[
+\text{LM} = \frac{1}{2} \sum_{i=1}^n (\widehat{g}_i - \bar{g})^2.
+\]</span> Under homoskedasticity and normal errors it converges to a
+<span class="math inline">\(\chi^2_{k}\)</span> distribution, where
+<span class="math inline">\(k\)</span> is the number of non-intercept
 regressors.</p>
 <p>The package implementation supplements the LM computation with
 diagnostics that highlight influential residuals and stability
 warnings.</p>
 <div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>bp_result <span class="ot">&lt;-</span> <span class="fu">performBPTest</span>(model, quakes)</span>
-<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Breusch-Pagan test</span></span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>bp_result</span>
-<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt;  Breusch-Pagan test for heteroscedasticity</span></span>
-<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
-<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a><span class="co">#&gt; X-squared = 191.93, df = 2, p-value &lt; 2.2e-16</span></span></code></pre></div>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>bp_result</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt;  Breusch-Pagan test for heteroscedasticity</span></span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
+<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt; X-squared = 191.93, df = 2, p-value &lt; 2.2e-16</span></span></code></pre></div>
 <p>A significant Breusch–Pagan statistic reinforces the evidence of
 increasing variance. Because the test assumes normal errors, the
 vignette later contrasts it with Koenker’s robust variant.</p>
 </div>
-<div id="koenkerbassett-studentised-test" class="section level2">
-<h2>Koenker–Bassett studentised test</h2>
+<div id="koenkers-studentised-test" class="section level2">
+<h2>Koenker’s studentised test</h2>
 <p>Koenker (1981) proposed studentising the LM statistic to accommodate
-non-normal errors by scaling residuals with an estimate of their
-variance. The package implements this through
-<code>performKoenkerTest()</code>, which focuses on absolute residuals
-and yields a statistic with the same asymptotic <span class="math inline">\(\chi^2\)</span> reference but improved Type I
-error control under heavy tails.</p>
+non-normal errors. Written in the squared residuals, the statistic above
+divides by <span class="math inline">\(2\widehat{\sigma}^4\)</span>,
+which is the variance of <span class="math inline">\(\widehat{e}_i^2\)</span> only under normality;
+Koenker replaces it with the sample variance of the <span class="math inline">\(\widehat{e}_i^2\)</span>. The result is <span class="math inline">\(nR^2\)</span> from the regression of <span class="math inline">\(\widehat{e}_i^2\)</span> on an intercept and the
+regressors, which <code>performKoenkerTest()</code> computes. It has the
+same asymptotic <span class="math inline">\(\chi^2_k\)</span> reference
+but improved Type I error control under heavy tails.</p>
 <div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>koenker_result <span class="ot">&lt;-</span> <span class="fu">performKoenkerTest</span>(model, quakes)</span>
-<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Koenker test</span></span>
-<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>koenker_result</span>
-<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt;  Koenker studentized Breusch-Pagan test</span></span>
-<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
-<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt; X-squared = 111.31, df = 2, p-value &lt; 2.2e-16</span></span></code></pre></div>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>koenker_result</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt;  Koenker studentized Breusch-Pagan test</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt; X-squared = 111.31, df = 2, p-value &lt; 2.2e-16</span></span></code></pre></div>
 <p>Comparing the three <span class="math inline">\(p\)</span>-values
 offers insight into how sensitive each test is to model
 misspecification. When Koenker’s statistic agrees with White’s result,
@@ -495,25 +497,23 @@ ratio on <span class="math inline">\(\beta\)</span>. Harvey’s is <span class="
 instead of assuming it, and <code>auxiliary = &quot;fitted&quot;</code> recovers
 the pre-0.7.0 variance model based on <span class="math inline">\(\widehat{y}_i\)</span> and <span class="math inline">\(\widehat{y}_i^2\)</span>.</p>
 <div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>park_result <span class="ot">&lt;-</span> <span class="fu">performParkTest</span>(model, quakes, <span class="st">&quot;mag&quot;</span>)</span>
-<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Park test</span></span>
-<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a>harvey_result <span class="ot">&lt;-</span> <span class="fu">performHarveyTest</span>(model)</span>
-<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt; [INFO] Running Harvey test</span></span>
-<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a><span class="fu">list</span>(<span class="at">Park =</span> park_result, <span class="at">Harvey =</span> harvey_result)</span>
-<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co">#&gt; $Park</span></span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>harvey_result <span class="ot">&lt;-</span> <span class="fu">performHarveyTest</span>(model)</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="fu">list</span>(<span class="at">Park =</span> park_result, <span class="at">Harvey =</span> harvey_result)</span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt; $Park</span></span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co">#&gt;  Park test for heteroscedasticity</span></span>
 <span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a><span class="co">#&gt;  Park test for heteroscedasticity</span></span>
-<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
-<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a><span class="co">#&gt; t = 7.1152, df = 998, p-value = 2.131e-12</span></span>
-<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth</span></span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a><span class="co">#&gt; t = 7.1152, df = 998, p-value = 2.131e-12</span></span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a><span class="co">#&gt; $Harvey</span></span>
 <span id="cb6-13"><a href="#cb6-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a><span class="co">#&gt; $Harvey</span></span>
+<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a><span class="co">#&gt;  Harvey test for multiplicative heteroscedasticity</span></span>
 <span id="cb6-15"><a href="#cb6-15" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a><span class="co">#&gt;  Harvey test for multiplicative heteroscedasticity</span></span>
-<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth; variance regressors: model regressors</span></span>
-<span id="cb6-19"><a href="#cb6-19" tabindex="-1"></a><span class="co">#&gt; X-squared = 52.43, df = 2, p-value = 4.121e-12</span></span>
-<span id="cb6-20"><a href="#cb6-20" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: error variance is a multiplicative function of the variance regressors</span></span></code></pre></div>
+<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a><span class="co">#&gt; data:  stations ~ mag + depth; variance regressors: model regressors</span></span>
+<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a><span class="co">#&gt; X-squared = 52.43, df = 2, p-value = 4.121e-12</span></span>
+<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a><span class="co">#&gt; alternative hypothesis: error variance is a multiplicative function of the variance regressors</span></span></code></pre></div>
 <p>Both functions rely on the shared validation helpers: Park requires
 an explicit variance driver and checks positivity for the logarithmic
 transform, whereas the Harvey helper defaults to the model’s own
@@ -559,7 +559,7 @@ multiplicative heteroscedasticity. <em>Econometrica, 44</em>(3),
 heteroscedasticity. <em>Journal of Econometrics, 17</em>(1),
 107–112.</li>
 <li>Park, R. E. (1966). Estimation with heteroscedastic error terms.
-<em>Econometrica, 34</em>(4), 888–908.</li>
+<em>Econometrica, 34</em>(4), 888.</li>
 <li>White, H. (1980). A heteroskedasticity-consistent covariance matrix
 estimator and a direct test for heteroskedasticity. <em>Econometrica,
 48</em>(4), 817–838.</li>

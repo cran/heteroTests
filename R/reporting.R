@@ -34,14 +34,14 @@ generateDiagnosticReport <- function(model, data = NULL,
 
   if (inherits(model, "formula")) {
     if (is.null(data)) stop("`data` must be supplied when `model` is a formula")
-    checkData(data)
+    .check_data(data)
     model <- lm(model, data = data)
   } else {
     checkModel(model)
     if (is.null(data)) {
       data <- model.frame(model)
     } else {
-      checkData(data)
+      .check_data(data)
     }
   }
 
@@ -50,7 +50,7 @@ generateDiagnosticReport <- function(model, data = NULL,
   writeLines(report_template, temp_rmd)
 
   test_results <- runHeteroTests(model, data)
-  plots <- plotDiagnosticSuiteEnhanced(model)
+  plots <- plotDiagnosticSuite(model, enhanced = TRUE)
 
   if (include_remediation) {
     remediation <- suggestRemediation(test_results)

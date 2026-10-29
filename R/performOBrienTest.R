@@ -5,7 +5,20 @@
 #' one-way ANOVA, yielding an approximate F test.
 #'
 #' @param model A fitted [stats::lm] object.
-#' @param data A [base::data.frame] used to fit `model` and containing `group`.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default. The
+#'   residuals and weights are read from the fit itself, and `group` from the
+#'   rows of `data` that hold the observations of the fit; the observations
+#'   whose group is missing are left out, with a warning. Without `data` it is
+#'   read from the model frame of `model`, which holds it only when it is a
+#'   variable of the model under its own name (`x`, not `log(x)`); a grouping
+#'   variable the model does not use needs `data`. Since 0.16.0, data that are
+#'   given are matched to the observations of the fit: rows with row names of
+#'   their own by name, in any order; rows that only number themselves
+#'   (a tibble, a data.table, a data frame whose row names were reset) by the
+#'   row numbers of the fit, or in the order of the fit when they hold one row
+#'   per observation. The rows the fit dropped may be there or not. Data whose
+#'   rows cannot be shown to hold the observations of the fit are refused; see
+#'   [test_results].
 #' @param group Character scalar specifying the grouping variable.
 #'
 #' @return An object of class \code{htest} with the F statistic, numerator and
@@ -50,69 +63,32 @@
 #' [performLeveneTest()] and [performBrownForsytheTest()] for robust
 #' deviation-based tests, and [performBartlettTest()] for the normal-theory
 #' likelihood-ratio test.
-performOBrienTest <- function(model, data, group) {
+performOBrienTest <- function(model, data = NULL, group) {
   test_label <- "O'Brien test"
+  # The residuals and weights come from the fit; `data`, when given, is matched
+  # to its observations and checked (R/model_context.R). `group` is read from
+  # the rows of `data` that hold the observations, so data taken in the order
+  # of the fit must tell those rows apart when it is not a column of the model
+  # frame.
+  ctx <- rmodel_context(
+    model, data, fn = "performOBrienTest", test_label = test_label,
+    reads = if (!missing(group) && length(group) == 1L) as.character(group) else character()
+  )
 
   if (!is.character(group) || length(group) != 1L || is.na(group) || !nzchar(group)) {
     stop("`group` must be supplied as a single column name.", call. = FALSE)
   }
 
-  rvalidateModelInputs(model, test_name = "O'Brien", min_obs = 6L)
+  rvalidateModelInputs(model, test_name = "O'Brien", min_obs = 6L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
 
-  model_terms <- stats::terms(model)
-  required_vars <- unique(c(all.vars(model_terms), group))
-  rvalidateDataInputs(data, required_vars = required_vars, min_obs = 6L)
-
-  residuals <- stats::residuals(model)
-  resid_names <- names(residuals)
-  data_rows <- rownames(data)
-
-  if (!is.null(resid_names) && length(resid_names) > 0 && !is.null(data_rows)) {
-    match_idx <- match(resid_names, data_rows)
-    if (anyNA(match_idx)) {
-      missing_rows <- resid_names[is.na(match_idx)]
-      stop(
-        sprintf(
-          "%s requires `data` to contain the rows used to fit the model. Missing rows: %s",
-          test_label,
-          paste(utils::head(missing_rows, 3L), collapse = ", ")
-        ),
-        call. = FALSE
-      )
-    }
-    working_data <- data[match_idx, , drop = FALSE]
-  } else {
-    if (nrow(data) != length(residuals)) {
-      stop(
-        sprintf(
-          "%s requires `data` with %d observations to match the fitted model, got %d.",
-          test_label,
-          length(residuals),
-          nrow(data)
-        ),
-        call. = FALSE
-      )
-    }
-    working_data <- data
-  }
-
-  cleaned <- rhandleMissingValues(working_data, variables = required_vars)
-  if (cleaned$removed_count > 0) {
-    residuals <- residuals[-cleaned$removed_cases]
-  }
-  working_data <- cleaned$data
-
-  if (length(residuals) != nrow(working_data)) {
-    stop(
-      sprintf(
-        "%s could not align residuals with the cleaned data (residuals = %d, rows = %d).",
-        test_label,
-        length(residuals),
-        nrow(working_data)
-      ),
-      call. = FALSE
-    )
-  }
+  # The Pearson residuals of the fit and the rows of `data` that hold its
+  # observations, in the order of the fit, or the model frame without `data`;
+  # the observations whose group is missing are left out, with a warning, as
+  # before 0.16.0 (rcontext_group_rows()).
+  kept <- rcontext_group_rows(ctx, data, group)
+  working_data <- kept$data
+  residuals <- kept$residuals
 
   requirements <- rvalidateTestRequirements(
     "obrien",
@@ -124,7 +100,7 @@ performOBrienTest <- function(model, data, group) {
 
   grp_raw <- working_data[[group]]
   if (!is.factor(grp_raw) && !is.character(grp_raw)) {
-    std_error("invalid_group_variable", group_var = group, min_groups = 2L)
+    .std_error("invalid_group_variable", group_var = group, min_groups = 2L)
   }
   grp <- base::droplevels(factor(grp_raw))
 
@@ -144,7 +120,7 @@ performOBrienTest <- function(model, data, group) {
   k <- length(levels_grp)
   n_total <- length(residuals)
   if (k < 2L) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "O'Brien test requires at least two groups"
     )
@@ -155,13 +131,13 @@ performOBrienTest <- function(model, data, group) {
   vars_i <- tapply(residuals, grp, stats::var)
 
   if (any(n_i <= 2L)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "O'Brien test requires at least three observations per group"
     )
   }
   if (any(!is.finite(vars_i))) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "O'Brien test requires finite variance within each group"
     )
@@ -188,7 +164,7 @@ performOBrienTest <- function(model, data, group) {
   p_value <- unname(tab$`Pr(>F)`[1L])
 
   if (!is.finite(statistic) || !is.finite(p_value)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "O'Brien transformed-residual ANOVA failed to produce finite inference"
     )

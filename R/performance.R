@@ -31,21 +31,41 @@ should_use_sparse <- function(rows, cols) {
   requireNamespace("Matrix", quietly = TRUE) && rows * cols > 1e6
 }
 
-chunked_regression_r2 <- function(model, data, residuals, chunk_size,
+# The design the streaming tests read, chunk by chunk, from the model context
+# (R/model_context.R): the design of the fit without the columns a
+# rank-deficient fit aliased (rcontext_design()), as the exact tests read it,
+# one row per observation in the order of the fit. Up to 0.16.0 each chunk of
+# rows of `data` built its own design from the formula, so a term computed
+# from the rows it is given, such as I(x > median(x)) or cut(x, quantile(x)),
+# took other values in each chunk than in the fit (B6 of the design of the
+# model context). An mgcv::gam() fit with smooth terms, whose stored design is
+# the basis of its smooths, is tested as before 0.16.0, on the design of the
+# variables of its formula, which its model frame holds, until the last step
+# of the model context settles which tests take such a fit (decision 23).
+rstreaming_design <- function(ctx) {
+  model <- ctx$model
+  if (identical(ctx$kind, "gam") && length(model$smooth) > 0L) {
+    design <- stats::model.matrix(stats::terms(model), ctx$frame,
+                                  contrasts.arg = model$contrasts, xlev = model$xlevels)
+    return(rnon_aliased_columns(design, model))
+  }
+  rcontext_design(ctx)
+}
+
+chunked_regression_r2 <- function(design, residuals, chunk_size,
                                   predictor_builder, response_builder,
                                   progress = FALSE, progress_label = "Processing chunks") {
   n <- length(residuals)
   if (n == 0L) {
     stop("No observations available after preprocessing.", call. = FALSE)
   }
+  if (NROW(design) != n) {
+    stop("Internal error: the design and the residuals differ in length.", call. = FALSE)
+  }
 
   chunks <- chunk_indices(n, chunk_size)
   progress_bar <- chunk_progress_bar(length(chunks), progress, progress_label)
   on.exit(progress_bar$close(), add = TRUE)
-
-  terms_obj <- stats::terms(model)
-  contrasts <- model$contrasts
-  xlevels <- model$xlevels
 
   XtX <- NULL
   XtY <- NULL
@@ -56,15 +76,11 @@ chunked_regression_r2 <- function(model, data, residuals, chunk_size,
 
   for (i in seq_along(chunks)) {
     idx <- chunks[[i]]
-    chunk_data <- data[idx, , drop = FALSE]
-    mm_chunk <- stats::model.matrix(
-      terms_obj,
-      data = chunk_data,
-      contrasts.arg = contrasts,
-      xlev = xlevels
-    )
+    # The rows of the stored design (rstreaming_design()), not a design built
+    # again from the rows of `data` in the chunk.
+    mm_chunk <- design[idx, , drop = FALSE]
 
-    predictors <- predictor_builder(mm_chunk, chunk_data, residuals[idx])
+    predictors <- predictor_builder(mm_chunk)
     predictors <- as.matrix(predictors)
 
     if (ncol(predictors) == 0) {
@@ -95,7 +111,7 @@ chunked_regression_r2 <- function(model, data, residuals, chunk_size,
       stop("Inconsistent design matrix dimensions between chunks.", call. = FALSE)
     }
 
-    response <- response_builder(residuals[idx], chunk_data, mm_chunk)
+    response <- response_builder(residuals[idx])
     response <- as.numeric(response)
     if (length(response) != nrow(design_chunk)) {
       stop("Response builder returned a vector of incorrect length.", call. = FALSE)
@@ -121,9 +137,15 @@ chunked_regression_r2 <- function(model, data, residuals, chunk_size,
     stop("No data processed during chunked regression.", call. = FALSE)
   }
 
+  # The cross-products themselves, from which performWhiteTestStreaming() counts
+  # and fits the terms of a regression it refuses (rcentred_cross_fit()).
+  cross <- list(XtX = XtX, XtY = as.numeric(XtY), y_sum = y_sum, y_sq_sum = y_sq_sum,
+                n = total_n)
+
   qr_decomp <- qr(XtX)
   if (qr_decomp$rank < ncol(XtX)) {
-    return(list(rank_deficient = TRUE, df = ncol(XtX) - 1L, chunks = length(chunks)))
+    return(list(rank_deficient = TRUE, df = ncol(XtX) - 1L, cross = cross,
+                chunks = length(chunks)))
   }
 
   beta <- tryCatch(
@@ -139,7 +161,8 @@ chunked_regression_r2 <- function(model, data, residuals, chunk_size,
   sst <- y_sq_sum - total_n * mean_y^2
 
   if (sst <= .Machine$double.eps) {
-    return(list(zero_variation = TRUE, df = ncol(XtX) - 1L, chunks = length(chunks)))
+    return(list(zero_variation = TRUE, df = ncol(XtX) - 1L, rank = ncol(XtX), cross = cross,
+                chunks = length(chunks)))
   }
 
   r_squared <- 1 - (sse / sst)
@@ -148,15 +171,68 @@ chunked_regression_r2 <- function(model, data, residuals, chunk_size,
   list(
     r_squared = r_squared,
     df = ncol(XtX) - 1L,
+    rank = ncol(XtX),
     n = total_n,
     response_mean = mean_y,
     response_tss = sst,
+    cross = cross,
     chunks = length(chunks)
   )
 }
 
+# The least-squares fit of the response on the columns `cols` of a design whose
+# first column is the intercept, from its cross-products (chunked_regression_r2()),
+# centred, as performWhiteTest() fits its terms. A column is collinear with the
+# columns kept before it when less than 1e-13 of its centred variance is its
+# own: a pivoted Cholesky decomposition of the centred cross-products scaled
+# to correlations. lm.fit() at its tolerance, 1e-7, on the columns themselves
+# would be 1e-14, the tolerance squared, but that is the rounding of
+# cross-products in double precision: on 25 observations of six regressors of
+# mtcars, a 26th independent term at 1.4e-14, where exact duplicates sit below
+# 2e-15 and genuine terms of a regressor 10,000 standard deviations from zero
+# at 2e-12 and above. The rank is at most the number of observations. qr() of
+# the uncentred cross-products squares their condition, and takes independent
+# terms of a regressor far from zero, or squares and products of raw
+# regressors, for collinear ones. Its rank, the intercept included, its
+# R-squared, NA when it cannot be computed, and the total sum of squares of
+# the response.
+rcentred_cross_fit <- function(cross, cols = seq_len(ncol(cross$XtX))[-1L]) {
+  sums <- cross$XtX[1L, cols]
+  centred <- cross$XtX[cols, cols, drop = FALSE] - tcrossprod(sums) / cross$n
+  centred_y <- cross$XtY[cols] - sums * cross$y_sum / cross$n
+  total <- cross$y_sq_sum - cross$y_sum^2 / cross$n
+  # A column whose centred norm is below 1e-7 of its norm is the intercept's.
+  varying <- which(diag(centred) > 1e-14 * diag(cross$XtX)[cols])
+  if (length(varying) == 0L) {
+    return(list(rank = 1L, r_squared = NA_real_, total = total))
+  }
+  spread <- sqrt(diag(centred)[varying])
+  correlation <- centred[varying, varying, drop = FALSE] / tcrossprod(spread)
+  factor <- suppressWarnings(chol(correlation, pivot = TRUE, tol = 1e-13))
+  keep <- attr(factor, "pivot")[seq_len(min(attr(factor, "rank"), cross$n - 1L))]
+  scaled_y <- centred_y[varying] / spread
+  beta <- tryCatch(solve(correlation[keep, keep, drop = FALSE], scaled_y[keep]),
+                   error = function(e) NULL)
+  r_squared <- if (!is.null(beta) && total > 0) {
+    min(max(sum(beta * scaled_y[keep]) / total, 0), 1)
+  } else {
+    NA_real_
+  }
+  list(rank = length(keep) + 1L, r_squared = r_squared, total = total)
+}
+
+# Whether the regressors, the first `regressors` columns after the intercept of
+# White's auxiliary design, fit the squared residuals exactly, from the
+# cross-products, as rwhite_regressors_fit_exactly() tells it from the design.
+rcross_regressors_exact <- function(cross, regressors) {
+  fit <- rcentred_cross_fit(cross, cols = seq_len(regressors) + 1L)
+  fit$total > 0 && isTRUE(1 - fit$r_squared <= rwhite_exact_tolerance)
+}
+
+# The builders of the auxiliary regressions: the predictors from the rows of
+# the design in a chunk, and the response from the residuals of those rows.
 white_predictor_builder <- function(cross_products = TRUE, max_interactions = 10) {
-  function(model_matrix, data_chunk, residuals_chunk) {
+  function(model_matrix) {
     if (ncol(model_matrix) < 2L) {
       stop("White test requires at least one regressor beyond the intercept.", call. = FALSE)
     }
@@ -178,7 +254,7 @@ white_predictor_builder <- function(cross_products = TRUE, max_interactions = 10
 
     if (cross_products && ncol(X) > 1) {
       if (ncol(X) > max_interactions) {
-        std_warning("cross_products_omitted")
+        .std_warning("cross_products_omitted")
       } else {
         for (i in seq_len(ncol(X) - 1L)) {
           for (j in seq.int(i + 1L, ncol(X))) {
@@ -194,7 +270,7 @@ white_predictor_builder <- function(cross_products = TRUE, max_interactions = 10
   }
 }
 
-bp_predictor_builder <- function(model_matrix, data_chunk, residuals_chunk) {
+bp_predictor_builder <- function(model_matrix) {
   if (colnames(model_matrix)[1] == "(Intercept)") {
     predictors <- model_matrix[, -1, drop = FALSE]
   } else {
@@ -206,19 +282,19 @@ bp_predictor_builder <- function(model_matrix, data_chunk, residuals_chunk) {
   predictors
 }
 
-koenker_predictor_builder <- function(model_matrix, data_chunk, residuals_chunk) {
-  bp_predictor_builder(model_matrix, data_chunk, residuals_chunk)
+koenker_predictor_builder <- function(model_matrix) {
+  bp_predictor_builder(model_matrix)
 }
 
-white_response_builder <- function(residuals_chunk, data_chunk, model_matrix_chunk) {
+white_response_builder <- function(residuals_chunk) {
   residuals_chunk^2
 }
 
-bp_response_builder <- function(residuals_chunk, data_chunk, model_matrix_chunk) {
+bp_response_builder <- function(residuals_chunk) {
   residuals_chunk^2
 }
 
-koenker_response_builder <- function(residuals_chunk, data_chunk, model_matrix_chunk) {
+koenker_response_builder <- function(residuals_chunk) {
   # Koenker's studentized BP regresses the squared residuals on the regressors
   # (n R^2); it is the squared-residual auxiliary regression, not the absolute one.
   residuals_chunk^2
@@ -231,6 +307,18 @@ koenker_response_builder <- function(residuals_chunk, data_chunk, model_matrix_c
 #' to scale to datasets that would otherwise exhaust available RAM.
 #'
 #' @inheritParams performWhiteTest
+#' @param data The data frame `model` was fitted to, or `NULL`, the default.
+#'   The response, design, weights and offset are read from the fit itself, so
+#'   a model that transforms its variables, has an `offset()` term, or takes
+#'   its `weights` or `offset` from a column of the data needs no `data`, and
+#'   the model frame of `model` is accepted as `data` (since 0.16.0; before,
+#'   such models needed `data`). Data that are given are matched to the
+#'   observations of the fit: rows with row names of their own by name, in any
+#'   order; rows that only number themselves (a tibble, a data.table, a data
+#'   frame whose row names were reset) by the row numbers of the fit, or in the
+#'   order of the fit when they hold one row per observation. The rows the fit
+#'   dropped may be there or not. Data whose rows cannot be shown to hold the
+#'   observations of the fit are refused; see [test_results].
 #' @param chunk_size Positive integer specifying the number of observations per
 #'   chunk. Smaller values reduce memory usage at the expense of additional
 #'   iteration overhead.
@@ -249,9 +337,46 @@ koenker_response_builder <- function(residuals_chunk, data_chunk, model_matrix_c
 #' reducing peak memory usage. When `Matrix` is installed, sparse cross-products
 #' are leveraged automatically for large chunks.
 #'
+#' Since 0.16.0 the chunks are rows of the design of the fit, read from the fit
+#' itself as [performWhiteTest()] reads it, so the value does not depend on the
+#' size of the chunks but by rounding; the auxiliary design, several times
+#' wider, is built chunk by chunk. Up to 0.16.0 each chunk built its own design
+#' from the formula, on its rows of `data`, so a term computed from the rows it
+#' is given took other values in each chunk than in the fit:
+#' `I(x > median(x))` the median of the chunk, and `cut(x, quantile(x))` its
+#' breaks, which stopped the test ("factor has new levels") in chunks of any
+#' size on a fit that dropped the row at the minimum of `x`. An `mgcv::gam()`
+#' fit with smooth terms is tested as before, on the design of the variables of
+#' its formula, which its model frame holds, rather than on the basis of its
+#' smooths, on which [performWhiteTest()] tests it.
+#'
 #' @references
 #' White, H. (1980). A heteroskedasticity-consistent covariance matrix estimator
 #' and a direct test for heteroscedasticity. *Econometrica, 48*(4), 817–838.
+#'
+#' @section Supported models:
+#' It accepts an `lm` and, since 0.16.0, a `glm` with the Gaussian family and the
+#' identity link, unweighted or with positive weights, a `fitWLS()` fit and, since
+#' 0.16.0, a rank-deficient fit, which it tests on the estimable part of its
+#' design: it gives the value of the same model fitted without the aliased columns.
+#' The Gaussian `glm` with prior weights `w` is the least-squares fit
+#' `lm(..., weights = w)`, with the same design and residuals, and the test gives
+#' the value of the `lm`. It refused every `glm` before 0.16.0, because the checks
+#' it runs read the R-squared of `summary()`, which a `glm` does not report; they
+#' read that of the least-squares fit now. It refuses a `glm` of another family or
+#' link, a `survey::svyglm()` fit, a fit with a zero weight, a coefficient that is
+#' not finite for another reason, `data` that lack rows or variables of the
+#' fit, and, since 0.16.0, a multivariate `lm`, a fit changed after it was
+#' fitted and a fit with `model = FALSE` whose data are gone, unless `data`
+#' gives its response and fitted values (see [test_results]). It stops when
+#' terms of its auxiliary regression are
+#' collinear, as the squares of dummy variables are, which [performWhiteTest()]
+#' drops, and, since 0.16.0, with the refusal of [performWhiteTest()] (see its
+#' section *Too few observations*) when its independent terms are at least as
+#' many as the observations, where it stopped as on collinear terms, or fit the
+#' squared residuals exactly, collinear or not, as on a paired design. Which
+#' model each test accepts, and why, is set out in [test_results], under
+#' *Supported models*.
 #'
 #' @examples
 #' data(mtcars)
@@ -261,31 +386,34 @@ koenker_response_builder <- function(residuals_chunk, data_chunk, model_matrix_c
 #' [performWhiteTest()] for the exact computation and \link[=performWhiteTestRobust]{performWhiteTestRobust()} for
 #' enhanced reporting.
 #' @export
-performWhiteTestStreaming <- function(model, data, chunk_size = 10000,
+performWhiteTestStreaming <- function(model, data = NULL, chunk_size = 10000,
                                       cross_products = TRUE, max_interactions = 10,
                                       progress = interactive()) {
-  checkModelEnhanced(model, data)
-
-  model_terms <- stats::terms(model)
-  required_vars <- unique(all.vars(model_terms))
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = "White test",
-    min_obs_model = 20L,
-    min_obs_data = 20L
-  )
-
-  working_data <- prepared$data
-  residuals <- prepared$residuals
+  test_label <- "White test"
+  # A Gaussian glm with the identity link is a least-squares fit, accepted
+  # since 0.16.0 (see the section on supported models); any other glm is not.
+  # It refused every glm before, because checkModel(enhanced = TRUE) read the
+  # R-squared of summary(), which a glm does not report; it reads that of the
+  # least-squares fit now (rleast_squares_r_squared()). The response, design,
+  # weights and residuals come from the fit; `data`, when given, is matched to
+  # its observations and checked (R/model_context.R).
+  ctx <- rmodel_context(model, data, fn = "performWhiteTestStreaming", test_label = test_label)
+  # The warnings of the checks of the model, on the data the test reads, or
+  # the model frame.
+  checkModel(model, if (is.null(data)) ctx$frame else data, enhanced = TRUE)
+  rvalidateModelInputs(model, test_name = test_label, min_obs = 20L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
+  rwarn_incomplete_rows(data, model)
+  residuals <- rcontext_pearson(ctx)
+  # The rows of `data` that hold the observations, in the order of the fit,
+  # or the model frame: what the checks below read.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements("white", model = model, data = working_data)
   rprocessValidationResult(requirements)
 
   stats <- chunked_regression_r2(
-    model = model,
-    data = working_data,
+    design = rstreaming_design(ctx),
     residuals = residuals,
     chunk_size = chunk_size,
     predictor_builder = white_predictor_builder(cross_products, max_interactions),
@@ -294,8 +422,29 @@ performWhiteTestStreaming <- function(model, data, chunk_size = 10000,
     progress_label = "Streaming White test"
   )
 
-  if (isTRUE(stats$rank_deficient)) {
-    std_error(
+  # As many independent terms as observations, or more, or fewer that fit the
+  # squared residuals exactly: performWhiteTest() refuses both, and so does
+  # this test, with the same message and advice, so that runHeteroTests() falls
+  # back where it does. Collinear terms are counted by their rank and fitted
+  # centred, from the cross-products (rcentred_cross_fit()), as
+  # performWhiteTest() counts and fits them: the squares of the dummies of a
+  # paired design equal the dummies and count once, so 30 pairs and a
+  # treatment have 31 independent terms for 60 observations, an exact fit the
+  # design forces, not too few observations.
+  regressors <- sum(!is.na(stats::coef(model))) - attr(stats::terms(model), "intercept")
+  products <- isTRUE(cross_products) && regressors > 1 && regressors <= max_interactions
+  deficient <- isTRUE(stats$rank_deficient)
+  aux <- if (deficient) rcentred_cross_fit(stats$cross) else stats
+  exact <- isTRUE(1 - aux$r_squared <= rwhite_exact_tolerance)
+  if (aux$rank >= length(residuals) || (deficient && exact)) {
+    rwhite_refuse_exact_fit(aux$rank, length(residuals), saturated = aux$rank >= length(residuals),
+                            products = products,
+                            regressors_exact = rcross_regressors_exact(stats$cross, regressors),
+                            what = if (deficient) "independent terms" else "terms")
+  }
+
+  if (deficient) {
+    .std_error(
       "rassumption_violation",
       assumption = paste(
         "Auxiliary regression became rank deficient; consider disabling cross-product terms",
@@ -305,14 +454,27 @@ performWhiteTestStreaming <- function(model, data, chunk_size = 10000,
   }
 
   if (isTRUE(stats$zero_variation)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "White test requires variation in squared residuals"
     )
   }
 
+  if (exact) {
+    rwhite_refuse_exact_fit(stats$df + 1L, stats$n, saturated = FALSE, products = products,
+                            regressors_exact = rcross_regressors_exact(stats$cross, regressors),
+                            what = "terms")
+  }
+
   test_statistic <- stats$n * stats$r_squared
   p_value <- stats::pchisq(test_statistic, stats$df, lower.tail = FALSE)
+
+  # The warning of performWhiteTest() on a factor with more levels than
+  # observations per level, counted on the model frame of the fit
+  # (rwarn_small_groups(), R/model_context.R). A factor that is a main effect
+  # stops the test above, on the squares of its dummies; one that enters only
+  # through an interaction with a regressor may not.
+  rwarn_small_groups(model, ctx$frame, "White's test", "performWhiteTest")
 
   structure(
     list(
@@ -329,14 +491,20 @@ performWhiteTestStreaming <- function(model, data, chunk_size = 10000,
   )
 }
 
-#' Streaming Breusch–Pagan test for large datasets
+#' Streaming Breusch-Pagan test for large datasets
 #'
-#' Computes the classical Breusch–Pagan statistic using chunked cross-products
+#' Computes the classical Breusch-Pagan statistic using chunked cross-products
 #' to avoid materialising the full auxiliary regression when working with large
 #' data frames. The streamed result is algebraically equivalent to the standard
 #' implementation while substantially reducing peak memory usage.
 #'
 #' @inheritParams performBPTest
+#' @param data The data frame `model` was fitted to, or `NULL`, the default,
+#'   read as [performWhiteTestStreaming()] reads it: the response, design,
+#'   weights and offset come from the fit itself, so a model that transforms
+#'   its variables, has an `offset()` term, or takes its `weights` or `offset`
+#'   from a column of the data needs no `data` (since 0.16.0), and data that
+#'   are given are matched to the observations of the fit.
 #' @param chunk_size Positive integer giving the number of observations per
 #'   streaming chunk.
 #' @param progress Logical flag indicating whether a textual progress bar should
@@ -345,39 +513,37 @@ performWhiteTestStreaming <- function(model, data, chunk_size = 10000,
 #' @return A \code{htest} object mirroring [performBPTest()] with additional
 #'   metadata describing the chunking configuration.
 #'
+#' @details Since 0.16.0 the chunks are rows of the design of the fit, as in
+#'   [performWhiteTestStreaming()], whose details say what changed.
+#'
 #' @export
-performBPTestStreaming <- function(model, data, chunk_size = 10000,
+performBPTestStreaming <- function(model, data = NULL, chunk_size = 10000,
                                    progress = interactive()) {
   test_label <- "Breusch-Pagan"
-
-  model_terms <- stats::terms(model)
-  required_vars <- unique(all.vars(model_terms))
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = test_label,
-    min_obs_model = 15L,
-    min_obs_data = 15L
-  )
-
-  working_data <- prepared$data
-  residuals <- prepared$residuals
+  # The response, design, weights and residuals come from the fit; `data`, when
+  # given, is matched to its observations and checked (R/model_context.R).
+  ctx <- rmodel_context(model, data, fn = "performBPTestStreaming", test_label = test_label)
+  rvalidateModelInputs(model, test_name = test_label, min_obs = 15L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
+  rwarn_incomplete_rows(data, model)
+  residuals <- rcontext_pearson(ctx)
+  # The rows of `data` that hold the observations, in the order of the fit,
+  # or the model frame: what the checks below read.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements("breusch_pagan", model = model, data = working_data)
   rprocessValidationResult(requirements)
 
   residual_variance <- stats::var(residuals)
   if (is.na(residual_variance) || residual_variance <= .Machine$double.eps) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Breusch-Pagan test requires residual variation greater than numerical precision"
     )
   }
 
   stats <- chunked_regression_r2(
-    model = model,
-    data = working_data,
+    design = rstreaming_design(ctx),
     residuals = residuals,
     chunk_size = chunk_size,
     predictor_builder = bp_predictor_builder,
@@ -387,14 +553,14 @@ performBPTestStreaming <- function(model, data, chunk_size = 10000,
   )
 
   if (isTRUE(stats$rank_deficient)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Breusch-Pagan auxiliary regression became rank deficient"
     )
   }
 
   if (isTRUE(stats$zero_variation)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Breusch-Pagan test requires variation in squared residuals"
     )
@@ -409,6 +575,11 @@ performBPTestStreaming <- function(model, data, chunk_size = 10000,
   test_statistic <- 0.5 * ess / sigma2^2
   df <- stats$df
   p_value <- stats::pchisq(test_statistic, df, lower.tail = FALSE)
+
+  # The warning of performBPTest() on a factor with more levels than
+  # observations per level, counted on the model frame of the fit
+  # (rwarn_small_groups(), R/model_context.R).
+  rwarn_small_groups(model, ctx$frame, "the Breusch-Pagan test", "performBPTest")
 
   structure(
     list(
@@ -425,14 +596,20 @@ performBPTestStreaming <- function(model, data, chunk_size = 10000,
   )
 }
 
-#' Streaming Koenker studentized Breusch–Pagan test
+#' Streaming Koenker studentized Breusch-Pagan test
 #'
-#' Evaluates Koenker's studentized variant of the Breusch–Pagan test (the
+#' Evaluates Koenker's studentized variant of the Breusch-Pagan test (the
 #' \eqn{n R^2} statistic from regressing the squared residuals on the regressors)
 #' using streamed cross-products so that large datasets can be processed without
 #' allocating the full auxiliary regression matrix.
 #'
 #' @inheritParams performKoenkerTest
+#' @param data The data frame `model` was fitted to, or `NULL`, the default,
+#'   read as [performWhiteTestStreaming()] reads it: the response, design,
+#'   weights and offset come from the fit itself, so a model that transforms
+#'   its variables, has an `offset()` term, or takes its `weights` or `offset`
+#'   from a column of the data needs no `data` (since 0.16.0), and data that
+#'   are given are matched to the observations of the fit.
 #' @param chunk_size Positive integer giving the number of observations processed
 #'   per streaming chunk.
 #' @param progress Logical indicating whether to display a textual progress bar.
@@ -440,31 +617,29 @@ performBPTestStreaming <- function(model, data, chunk_size = 10000,
 #' @return A \code{htest} result equivalent to [performKoenkerTest()] with
 #'   additional metadata describing the streaming configuration.
 #'
+#' @details Since 0.16.0 the chunks are rows of the design of the fit, as in
+#'   [performWhiteTestStreaming()], whose details say what changed.
+#'
 #' @export
-performKoenkerTestStreaming <- function(model, data, chunk_size = 10000,
+performKoenkerTestStreaming <- function(model, data = NULL, chunk_size = 10000,
                                         progress = interactive()) {
   test_label <- "Koenker"
-
-  model_terms <- stats::terms(model)
-  required_vars <- unique(all.vars(model_terms))
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = test_label,
-    min_obs_model = 15L,
-    min_obs_data = 15L
-  )
-
-  working_data <- prepared$data
-  residuals <- prepared$residuals
+  # The response, design, weights and residuals come from the fit; `data`, when
+  # given, is matched to its observations and checked (R/model_context.R).
+  ctx <- rmodel_context(model, data, fn = "performKoenkerTestStreaming", test_label = test_label)
+  rvalidateModelInputs(model, test_name = test_label, min_obs = 15L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
+  rwarn_incomplete_rows(data, model)
+  residuals <- rcontext_pearson(ctx)
+  # The rows of `data` that hold the observations, in the order of the fit,
+  # or the model frame: what the checks below read.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements("koenker", model = model, data = working_data)
   rprocessValidationResult(requirements)
 
   stats <- chunked_regression_r2(
-    model = model,
-    data = working_data,
+    design = rstreaming_design(ctx),
     residuals = residuals,
     chunk_size = chunk_size,
     predictor_builder = koenker_predictor_builder,
@@ -474,14 +649,14 @@ performKoenkerTestStreaming <- function(model, data, chunk_size = 10000,
   )
 
   if (isTRUE(stats$rank_deficient)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Koenker auxiliary regression became rank deficient"
     )
   }
 
   if (isTRUE(stats$zero_variation)) {
-    std_error(
+    .std_error(
       "rassumption_violation",
       assumption = "Koenker test requires variation in squared residuals"
     )
@@ -490,6 +665,11 @@ performKoenkerTestStreaming <- function(model, data, chunk_size = 10000,
   test_statistic <- stats$n * stats$r_squared
   df <- stats$df
   p_value <- 1 - stats::pchisq(test_statistic, df)
+
+  # The warning of performKoenkerTest() on a factor with more levels than
+  # observations per level, counted on the model frame of the fit
+  # (rwarn_small_groups(), R/model_context.R).
+  rwarn_small_groups(model, ctx$frame, "Koenker's test", "performKoenkerTest")
 
   structure(
     list(
@@ -521,83 +701,168 @@ performKoenkerTestStreaming <- function(model, data, chunk_size = 10000,
 #' @return Named list of test results in the order provided by `tests`.
 #'
 #' @details
-#' When `n_cores` exceeds one and the `parallel` package is available, the helper
-#' evaluates the diagnostics via [parallel::parLapply()] after exporting the
-#' model and data to the worker environment. On systems without fork support the
-#' function gracefully reverts to sequential execution.
+#' When `n_cores` exceeds one the diagnostics run on a socket cluster of that
+#' many workers ([parallel::makeCluster()]), started for the call, each of which
+#' loads the installed heteroTests. The model and the data travel to the
+#' workers with each task. With `n_cores = 1`, or when the default comes to one
+#' worker, the diagnostics run in the session.
+#'
+#' Test `i` draws its random numbers from stream `i` of a L'Ecuyer-CMRG
+#' generator seeded by one draw from the session's generator, on the workers
+#' and in the session alike. A seeded call that runs a resampling test, such as
+#' `"wild_bootstrap"`, therefore returns the same value each time and whatever
+#' `n_cores`, `n_cores = 1` included. It is not the value that test returns
+#' when called directly from the same seed, which draws from the session's
+#' generator; both are bootstraps of the same data.
 #'
 #' @seealso
 #' [cachedTest()] for memoised execution of individual diagnostics.
 #' @export
 runHeteroTestsParallel <- function(model, data, tests, n_cores = NULL) {
+  # Forced here, in the session. The task below travels to a socket worker
+  # with this frame, and an argument still a promise there is evaluated in
+  # the worker, which has no `m1` for runHeteroTestsParallel(m1, mtcars, ...)
+  # called at top level.
+  force(model)
+  force(data)
+  force(tests)
   if (is.null(n_cores)) {
     n_cores <- min(parallel::detectCores() - 1L, length(tests))
   }
 
-  if (n_cores > 1L && requireNamespace("parallel", quietly = TRUE)) {
+  # Test i draws from stream i of a L'Ecuyer-CMRG generator seeded by one
+  # draw from the session's, so a seeded call that runs a resampling test
+  # gives the same result each time, whatever n_cores: a call run in the
+  # session draws from the same streams as one run on workers. Before 0.15.0
+  # each worker drew from a generator set.seed() did not reach, and a call run
+  # in the session drew from the session's generator.
+  streams <- rtask_streams(length(tests))
+  task <- function(i) .run_registered_diagnostic(tests[[i]], model, data)
+  if (n_cores > 1L) {
     cl <- parallel::makeCluster(n_cores)
     on.exit(parallel::stopCluster(cl), add = TRUE)
 
     parallel::clusterEvalQ(cl, library(heteroTests))
-    parallel::clusterExport(cl, c("model", "data"), envir = environment())
-
-    results <- parallel::parLapply(cl, tests, function(t) {
-      .run_registered_diagnostic(t, model, data)
-    })
-    names(results) <- tests
+    results <- rparallel_tasks(seq_along(tests), task, streams, n_cores, cl)
   } else {
-    results <- lapply(tests, function(t) .run_registered_diagnostic(t, model, data))
-    names(results) <- tests
+    results <- lapply(seq_along(tests), function(i) rrun_on_stream(streams[[i]], task, i))
   }
+  names(results) <- tests
 
   results
 }
 
 #' Cache results of a heteroscedasticity test
-#' 
-#' Avoids recomputing expensive diagnostics by hashing their inputs and reusing
-#' stored results.
 #'
-#' @param test_name Character scalar naming the diagnostic registered in
-#'   `.diagnostic_registry` or `.test_factory`.
+#' Runs a registered diagnostic, and returns the result of an earlier call on
+#' the same inputs instead when the diagnostic is deterministic.
+#'
+#' @param test_name Character scalar naming a diagnostic of the registry
+#'   ([listDiagnostics()]) or of `test_factory`.
 #' @param model Fitted model object supplied to the diagnostic.
 #' @param data Data frame used to fit the model.
 #' @param ... Additional arguments forwarded to the diagnostic.
-#' @param use_cache Logical scalar indicating whether cached results may be used
-#'   (defaults to `TRUE`).
+#' @param use_cache Logical scalar: may the result be read from the cache and
+#'   stored in it? `FALSE` runs the diagnostic. Defaults to `TRUE`.
 #'
 #' @return The diagnostic result, either retrieved from cache or freshly
 #'   computed.
 #'
 #' @details
-#' The cache key is created by hashing the test name, model coefficients,
-#' residuals, data, and additional arguments. When the key already exists in the
-#' cache environment the stored result is returned immediately; otherwise the
-#' diagnostic is executed and its output stored for future calls. Set
-#' `use_cache = FALSE` to force recomputation when the underlying model has
-#' changed.
+#' **What is cached.** Only the deterministic tests the package registers:
+#' `"white"`, `"breusch_pagan"`, `"koenker"`, `"cook_weisberg"`, `"ncv"`,
+#' `"spread_level"`, `"student_bp"`, `"szroeter"`, `"quantile_regression"`,
+#' `"high_dimensional"` and `"variance_form"`.
+#'
+#' **What is not.** A test that draws random numbers is never cached:
+#' `"wild_bootstrap"`, `"white_bootstrap"`, `"rank_permutation"` and
+#' `"spatial_hetero"` run on every call, so a seeded call returns what it
+#' returns without the cache, and leaves the random number generator where it
+#' leaves it without the cache. Nor is `"box_m"`, which tests data rather than
+#' a model, a diagnostic added with [registerDiagnostic()] or
+#' `test_factory$register()`, or one registered again under a name of the
+#' package: the package cannot know whether it draws random numbers or reads
+#' anything besides its inputs. A result whose computation moved the random
+#' number generator is not stored either. Before 0.16.0 every name was cached,
+#' the resampling tests included: a call with another seed returned the
+#' replicates of the first, and the random numbers drawn after it were not
+#' those of a call without the cache.
+#'
+#' **The key.** The test, its arguments, and the parts of the model and of the
+#' data the test reads: the class of the model, its family and link;
+#' from the model context of the fit, its model frame, response, design,
+#' residuals and fitted values, prior weights, total offset, rank and aliased
+#' coefficients, the names of its observations and its `na.action`; its
+#' coefficients, the weights it stores, its terms (with their `predvars`),
+#' call, contrasts and levels, residual degrees of freedom, whether it keeps
+#' its model frame, and its attributes, such as the variance function of a
+#' [fitWLS()] fit; and `data`, whole: its values, row names, class and
+#' attributes. The key is an xxhash64 digest of those values (from the
+#' **digest** package; without it nothing is cached). It holds values, not
+#' environments: a model refitted to the same data, in another environment or
+#' another session, has the same key and is answered from the cache, with the
+#' model of the call as `attr(result, "model")`, so that the result is
+#' `identical()` to the one the test computes. A model the tests refuse before
+#' reading it, such as a fit with `model = FALSE` whose data changed after the
+#' fit, has no key and is refused as without the cache; so has a fit with
+#' `model = FALSE` whose data are gone, whose model frame the tests rebuild
+#' from `data`, and it runs without the cache.
+#'
+#' **What the key leaves out.** The key does not hold the environment of the
+#' formula: a test that evaluates the formula on `data` again, as the check of
+#' the rows of `data` does, reads the functions and variables of that
+#' environment as they are, so that after `f` is defined again a model
+#' `y ~ f(x)` is answered with the result computed with the old `f`, where
+#' without the cache the check may refuse `data`. Clear both caches, with
+#' [clearTestCache()] and [clearAnalysisCache()], after changing one of them.
+#' Nor does it hold the options of the session: a result read from the cache
+#' gives none of the warnings and messages of the call that computed it but
+#' one (below), so a call made under `options(warn = 2)` after one that
+#' stored its result is answered with that result, where without the cache a
+#' warning of the test, turned into an error, stops it. The
+#' results of the tests otherwise do not depend on the options; the names of
+#' the estimates of the quantile regression test depended on
+#' `options(digits)` before 0.16.0.
+#'
+#' Before 0.16.0 the key held only the test, the coefficients, the residuals,
+#' `data` and the arguments. Fits that share those shared one entry, and the
+#' second call returned the result of the first: `lm(y ~ x + offset(o))` and
+#' `lm(I(y - o) ~ x)`, which have the same coefficients and residuals and
+#' other fitted values; a fit and the same fit with its weights changed, which
+#' the tests refuse; or a fit with `model = FALSE` before and after its data
+#' changed, which they refuse too.
+#'
+#' **The bound.** The cache holds at most
+#' `getOption("heteroTests.cache_size", 100)` results, and drops the one used
+#' least recently to store another; `options(heteroTests.cache_size = 0)`
+#' turns it off, together with the cache of [runHeteroTests()]. A stored result
+#' keeps no copy of the model. Before 0.16.0 the cache grew without bound, by
+#' about 25 KB per call on a new model, and kept about 0.3 KB per call after
+#' [clearTestCache()]. The checks the tests make first keep their results in a
+#' cache of their own, of at most
+#' `getOption("heteroTests.validation_cache_size", 1000)` results, which `0`
+#' turns off; it holds no check that drew random numbers.
+#'
+#' A result read from the cache is returned without running the test, so the
+#' call gives none of the warnings and messages of the call that computed it,
+#' but one: since 0.16.0 the warning White's, Koenker's and the Breusch-Pagan
+#' tests give on a factor with more levels than observations per level, of
+#' class `heteroTests_fixed_effects_warning`, is stored with the result and
+#' given again on every call that reads it, as by [runHeteroTests()] (see
+#' *Fixed effects for small groups* in [performKoenkerTest()]). The call that
+#' computes the result gives it once the result is stored, so that under
+#' `options(warn = 2)` the warning stops the call after the result is stored.
 #'
 #' @seealso
-#' [clearTestCache()] resets the cache between analysis sessions.
+#' [clearTestCache()] empties the cache; [runHeteroTests()] uses it with
+#' `use_cache = TRUE`.
 #' @export
 cachedTest <- function(test_name, model, data, ..., use_cache = TRUE) {
   if (!use_cache) {
     return(.run_registered_diagnostic(test_name, model, data, ...))
   }
-
-  if (!requireNamespace("digest", quietly = TRUE)) {
-    return(.run_registered_diagnostic(test_name, model, data, ...))
-  }
-
-  key <- digest::digest(list(test_name, model$coefficients, model$residuals, data, list(...)))
-
-  if (exists(key, envir = .test_cache)) {
-    return(get(key, envir = .test_cache))
-  }
-
-  result <- .run_registered_diagnostic(test_name, model, data, ...)
-  assign(key, result, envir = .test_cache)
-  result
+  inputs <- if (rcache_cacheable(test_name)) rcache_inputs(model, data)
+  rcached_diagnostic(test_name, model, data, inputs, ...)
 }
 
 .run_registered_diagnostic <- function(test_name, model, data, ...) {
@@ -617,70 +882,52 @@ cachedTest <- function(test_name, model, data, ..., use_cache = TRUE) {
 }
 
 #' Clear cached test results
-#' 
-#' Removes all objects from the internal cache environment so that subsequent
-#' diagnostic calls recompute their statistics.
 #'
+#' Removes every result from the cache of [cachedTest()], which
+#' [runHeteroTests()] also uses for each test with `use_cache = TRUE`, so that
+#' later calls compute them again.
+#'
+#' The cache is bounded and holds no test that draws random numbers (see
+#' [cachedTest()]), so clearing it is needed neither to bound the memory of a
+#' long session nor to draw new replicates with another seed. It is needed
+#' after a change the key does not see, such as a function or a variable of
+#' the environment of a model's formula; call [clearAnalysisCache()] then too,
+#' since the cache of whole calls of [runHeteroTests()] keeps the results of
+#' such a model as well.
+#'
+#' @return `NULL`, invisibly.
 #' @seealso
 #' [cachedTest()] for invoking diagnostics with memoisation.
 #'
 #' @export
 clearTestCache <- function() {
-  rm(list = ls(envir = .test_cache), envir = .test_cache)
+  rcache_clear(.test_cache)
   invisible(NULL)
 }
 
-.test_cache <- new.env(parent = emptyenv())
+# The results of cachedTest() and of each test of runHeteroTests(), and the
+# results of whole calls of runHeteroTests(): bounded stores (R/cache.R).
+.test_cache <- rcache_new()
 
-.analysis_cache <- new.env(parent = emptyenv())
-
-.analysis_cache_key <- function(model, data, tests, streaming, chunk_size) {
-  if (!requireNamespace("digest", quietly = TRUE)) {
-    return(NULL)
-  }
-
-  safe_sigma <- tryCatch(stats::sigma(model), error = function(e) NULL)
-
-  tryCatch(
-    digest::digest(
-      list(
-        tests = as.character(tests),
-        streaming = streaming,
-        chunk_size = chunk_size,
-        coefficients = stats::coef(model),
-        residual_hash = digest::digest(stats::residuals(model), algo = "xxhash64"),
-        sigma = safe_sigma,
-        data_hash = digest::digest(data, algo = "xxhash64")
-      ),
-      algo = "xxhash64"
-    ),
-    error = function(e) NULL
-  )
-}
-
-.analysis_cache_get <- function(key) {
-  if (is.null(key) || !exists(key, envir = .analysis_cache, inherits = FALSE)) {
-    return(NULL)
-  }
-  get(key, envir = .analysis_cache, inherits = FALSE)
-}
-
-.analysis_cache_set <- function(key, value) {
-  if (!is.null(key)) {
-    assign(key, value, envir = .analysis_cache)
-  }
-  value
-}
+.analysis_cache <- rcache_new()
 
 #' Clear cached diagnostic run results
 #'
-#' Removes memoised outputs stored by [runHeteroTests()] when `use_cache = TRUE`.
-#' This is useful for deterministic test runs or when the underlying data/model
-#' have changed and cached summaries should be invalidated.
+#' Removes the results of whole calls that [runHeteroTests()] stored with
+#' `use_cache = TRUE`, so that later calls run their tests again.
 #'
+#' A call is stored only when every test it runs is deterministic, under a key
+#' that holds the tests, whether they are streamed and in chunks of what size,
+#' and every part of the model and the data they read (see [cachedTest()]).
+#' The cache holds at most `getOption("heteroTests.cache_size", 100)` calls
+#' and drops the one used least recently; `0` turns it off. Each test of the
+#' call is also kept in the cache of [cachedTest()], which
+#' [clearTestCache()] empties.
+#'
+#' @return `NULL`, invisibly.
 #' @seealso [runHeteroTests()], [cachedTest()] for per-diagnostic caching.
 #' @export
 clearAnalysisCache <- function() {
-  rm(list = ls(envir = .analysis_cache), envir = .analysis_cache)
+  rcache_clear(.analysis_cache)
   invisible(NULL)
 }

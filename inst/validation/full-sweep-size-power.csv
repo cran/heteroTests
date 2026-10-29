@@ -21,7 +21,7 @@
 "performLeveneTest","hetero","sd = x^2",400,0.0675,0.0125442965127583,400,1,0,400,0.0475,0.0106352891357029,400,0
 "performOBrienTest","hetero","sd = x^2",400,0.0475,0.0106352891357029,400,1,0,400,0.0275,0.00817675822071314,400,0
 "performBoxMTest","hetero","sd = x^2",400,0.0125,0.00555512151082224,400,1,0,400,0.07,0.0127573508221731,400,0
-"performGlejserTest","hetero","sd = x^2",400,0.06,0.0118743420870379,400,1,0,400,0.0575,0.0116397755562554,400,0
+"performGlejserTest","hetero","sd = x^2",400,0.0575,0.0116397755562554,400,1,0,400,0.055,0.011399013115178,400,0
 "performParkTest","hetero","sd = x^2",400,0.0625,0.0121030729568982,400,1,0,400,0.0575,0.0116397755562554,400,0
 "performGQTest","hetero","sd = x^2",400,0.0825,0.0137562485801908,400,1,0,400,0.1525,0.0179752433919544,400,0
 "performSzroeterTest","hetero","sd = x^2",400,0.0575,0.0116397755562554,400,1,0,400,0.1625,0.0184454432042171,400,0
@@ -30,4 +30,5 @@
 "performRESETTest","form","omitted quadratic",400,0.045,0.0103652062208139,400,1,0,400,NA,NA,0,0
 "performBPRandomEffectsTest","effect","random intercepts",400,0.03,0.00852936105461599,400,1,0,400,NA,NA,0,0
 "performPesaranTest","csdep","common time factor",400,0.0375,0.00949917759598166,400,1,0,400,NA,NA,0,0
-"performSpatialHeteroTest","spatial","variance clustered in space",400,0.045,0.0103652062208139,400,0.3625,0.0240361056537868,400,NA,NA,0,0
+"performSpatialHeteroTest","spatial","variance clustered in space",400,0.05,0.0108972473588517,400,0.35,0.0238484800354236,400,NA,NA,0,0
+"performVarianceFormTest","variance_form","log-variance quadratic in x",400,0.0575,0.0116397755562554,400,0.9775,0.00741514497498194,400,NA,NA,0,0

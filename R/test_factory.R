@@ -5,6 +5,13 @@
 #' alternative to the older environment-based registry used by
 #' `runHeteroTests()`.
 #'
+#' @section Deprecated:
+#' `TestFactory` and its shared instance `test_factory` are deprecated since
+#' 0.14.0: they are the package's internal machinery and leave the exports in
+#' 1.0.0. They are objects rather than functions, so they cannot warn when
+#' used; this page and `NEWS.md` are the notice. Use [registerDiagnostic()] to
+#' add a test and [runHeteroTests()] to run one.
+#'
 #' @section Usage:
 #' The shared instance `test_factory` can be used to register new tests
 #' and execute them. See \code{register} and \code{run_test} methods
@@ -77,8 +84,15 @@ TestFactory <- R6::R6Class(
         stop("Unknown test: ", test_name)
       }
       meta <- private$.metadata[[test_name]]
-      validateTestInputs(model, data, test_name, meta$min_observations)
-      result <- private$.tests[[test_name]](model, data, ...)
+      test <- private$.tests[[test_name]]
+      # A rank-deficient fit is left to a test of the package, which accepts
+      # it, computed on the estimable part of the design, or refuses it with
+      # its own message; it is refused here for any other function.
+      .validate_test_inputs(
+        model, data, test_name, meta$min_observations,
+        allow_aliased = rfactory_test_validates(test)
+      )
+      result <- test(model, data, ...)
       if (inherits(result, "htest")) {
         result$test_metadata <- meta
       }
@@ -91,34 +105,85 @@ TestFactory <- R6::R6Class(
 #'
 #' Users can register new tests via this object. Built-in tests are
 #' pre-registered at package load time.
+#'
+#' Deprecated since 0.14.0, with [TestFactory]: it leaves the exports in
+#' 1.0.0, and as an object it cannot warn when used. Use
+#' [registerDiagnostic()] and [runHeteroTests()] instead.
+#'
+#' Its `"szroeter"` entry is [performSzroeterTest()], which needs the column
+#' that orders the observations, given as `order_by`:
+#' `test_factory$run_test("szroeter", model, data, order_by = "x")`. Without
+#' `order_by` it refuses the call and asks for it, since 0.16.0; before, it
+#' stopped with "argument "order_by" is missing, with no default".
 #' @export
 #' @name test_factory
 NULL
 
 test_factory <- TestFactory$new()
 
+# The tests the package registers, by name. Each validates the model it is
+# given itself, and accepts a rank-deficient fit, computed on the estimable
+# part of its design, or refuses it with its own message, so run_test() leaves
+# such a fit to them, and to any function of the package
+# (rfactory_test_validates()). For a function a user writes, the checks
+# run_test() makes first still refuse such a fit, as before 0.16.0.
+.ht_factory_tests <- list(
+  white = performWhiteTest,
+  breusch_pagan = performBPTest,
+  koenker = performKoenkerTest,
+  # The implementation behind performStudentizedBPTest(), after the refusal
+  # of a glm that is not a least-squares fit that the function makes, since
+  # 0.15.0; it returned a value for such a fit before.
+  student_bp = function(model, data, ...) {
+    rrefuse_non_gaussian_glm(model, "performStudentizedBPTest")
+    .studentized_bp_test(model, data, ...)
+  },
+  white_bootstrap = performWhiteTestBootstrap,
+  # performSzroeterTest() needs the ordering of the observations, which
+  # run_test() passes on from its `...` as `order_by`. Without it the entry
+  # refuses the call and asks for it, as "spatial_hetero" asks for its
+  # neighbour list, since 0.16.0; before, it stopped with "argument
+  # "order_by" is missing, with no default". It does not order by anything
+  # of its own: the registered "szroeter" of runHeteroTests() orders by the
+  # fitted values, an ordering this entry never had.
+  szroeter = function(model, data, order_by, ...) {
+    if (missing(order_by)) {
+      stop(
+        "The Szroeter test needs `order_by`, the column of `data` that orders the ",
+        "observations: test_factory$run_test(\"szroeter\", model, data, order_by = \"x\").",
+        call. = FALSE
+      )
+    }
+    performSzroeterTest(model, data, order_by = order_by, ...)
+  },
+  wild_bootstrap = performWildBootstrapTest,
+  quantile_regression = performQuantileRegressionTest,
+  rank_permutation = performRankPermutationTest,
+  high_dimensional = performHighDimensionalTest,
+  spatial_hetero = function(model, data) {
+    listw <- attr(data, "listw")
+    if (is.null(listw)) {
+      stop("Spatial test requires `listw` attribute on data.", call. = FALSE)
+    }
+    performSpatialHeteroTest(model, data, listw = listw)
+  }
+)
+
+# Is `fun` a function of the package, such as one of the tests it registers?
+# Those are defined in its namespace. A function a user writes, even one that
+# calls a test of the package, is defined elsewhere. The environment is
+# compared rather than the function itself: an installed package lazy-loads
+# the list above apart from the functions, and covr rewrites the functions
+# of the namespace but not their copies in the list.
+rfactory_test_validates <- function(fun) {
+  is.function(fun) && identical(environment(fun), environment(rfactory_test_validates))
+}
+
 # Register core and validated tests
 .test_factory_register_defaults <- function() {
-  test_factory$register("white", performWhiteTest)
-  test_factory$register("breusch_pagan", performBPTest)
-  test_factory$register("koenker", performKoenkerTest)
-  test_factory$register("student_bp", performStudentizedBPTest)
-  test_factory$register("white_bootstrap", performWhiteTestBootstrap)
-  test_factory$register("szroeter", performSzroeterTest)
-  test_factory$register("wild_bootstrap", performWildBootstrapTest)
-  test_factory$register("quantile_regression", performQuantileRegressionTest)
-  test_factory$register("rank_permutation", performRankPermutationTest)
-  test_factory$register("high_dimensional", performHighDimensionalTest)
-  test_factory$register(
-    "spatial_hetero",
-    function(model, data) {
-      listw <- attr(data, "listw")
-      if (is.null(listw)) {
-        stop("Spatial test requires `listw` attribute on data.", call. = FALSE)
-      }
-      performSpatialHeteroTest(model, data, listw = listw)
-    }
-  )
+  for (name in names(.ht_factory_tests)) {
+    test_factory$register(name, .ht_factory_tests[[name]])
+  }
 }
 
 .test_factory_register_defaults()
