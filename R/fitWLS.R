@@ -86,7 +86,14 @@
 #' test refused. Any other `glm` is refused.
 #'
 #' @param model A fitted model of class `lm`, or a `glm` with the Gaussian
-#'   family and the identity link.
+#'   family and the identity link. Since 0.17.0 it refuses a `MASS::rlm()`
+#'   fit, an M-estimate, whose residuals are not the least-squares residuals
+#'   it fits its variance function to, and an `mgcv::gam()` fit with penalised
+#'   smooth terms, which it refitted by weighted least squares on the basis of
+#'   its smooths without the penalty; a `gam` that is the least-squares fit of
+#'   its design, as one whose smooth terms are all fixed (`s(x, fx = TRUE)`),
+#'   is refitted on that design (decisions 4, 37 and 38 of the design of the
+#'   model context).
 #' @param data Optional [base::data.frame] holding the variables named in
 #'   `var_formula`. It is needed only when they are not in the model frame.
 #'   Since 0.16.0 its rows are matched to the observations of the fit as the
@@ -103,12 +110,24 @@
 #'   `"exponential"` (the default) or `"power"`. See the section on variance
 #'   functions.
 #' @return A new `lm` object fitted with weights. The estimated variances are
-#'   attached as the `"variance_model"` attribute, and the fitted variance
-#'   function (its form, regressors and coefficients) as the
+#'   attached as the `"variance_model"` attribute, one per row, as `weights()`
+#'   of the result gives the weights: on a fit with `na.action = na.exclude`,
+#'   `NA` at the rows the fit dropped (since 0.17.0; before, one per
+#'   observation of the fit). The fitted variance function (its form,
+#'   regressors and coefficients) is attached as the
 #'   `"variance_function"` attribute, which is what
 #'   [performVarianceFormTest()] reads, and what the bootstrap tests read to
-#'   estimate the weights again in each replicate. When `model` was fitted
-#'   with weights, the attribute also holds them, as `initial_weights`.
+#'   estimate the weights again in each replicate. Its `regressors`, the
+#'   variance regressors on the scale of the form, and `index`, the fitted
+#'   log-variance \eqn{\hat\gamma_0 + z_i^\top \hat\gamma}, have one row, or
+#'   value, per observation of the fit, also on a fit with
+#'   `na.action = na.exclude`, whose rows they are not padded to. The estimated
+#'   variances are proportional to the exponential of `index`, unless the
+#'   variance function could not be used and the fit fell back to equal
+#'   weights, which the record says with `usable = FALSE` and its `reason`;
+#'   `index` is then the fitted log-variance that was refused, or `NA`.
+#'   When `model` was fitted with weights, the attribute also holds them, as
+#'   `initial_weights`, one per observation of the fit too.
 #' @references
 #' Harvey, A. C. (1976). Estimating regression models with multiplicative
 #' heteroscedasticity. *Econometrica, 44*(3), 461--465.
@@ -152,6 +171,10 @@ fitWLS <- function(model, data = NULL, var_formula = NULL,
     rcheck_wls_data(model, data)
   }
   ctx <- rcontext_second_formula(model, data, list(var_formula), "fitWLS", "fitWLS()")
+  # The refit is weighted least squares on the design of the fit, without the
+  # penalty of a smooth term: a penalised mgcv::gam() fit is refused, where it
+  # was refitted unpenalised (decision 37 of the design of the model context).
+  rrefuse_penalised_gam(ctx, "fitWLS", "fitwls")
   rweighted_refit(model, rfit_variance_function(model, data, var_formula, form, ctx = ctx),
                   ctx = ctx)
 }
@@ -229,7 +252,12 @@ rweighted_refit <- function(model, variance, ctx = NULL) {
   # performVarianceFormTest() accept. Before 0.16.0 such a fit kept the class
   # of the glm, without its family.
   class(fit) <- if (inherits(model, "glm")) "lm" else class(model)
-  attr(fit, "variance_model") <- 1 / w
+  # The estimated variances, one per row as weights() and residuals() of the
+  # refit give them: on a fit with na.action = na.exclude, padded with NA at
+  # the rows the fit dropped, as naresid() pads them (B13, increment 9 of the
+  # model context; before, one per observation of the fit). The record below
+  # keeps one value per observation, which the bootstraps read.
+  attr(fit, "variance_model") <- stats::naresid(fit$na.action, 1 / w)
   record <- variance[names(variance) != "weights"]
   # The weights of the model refitted, if it had any. They decided its
   # residuals, so a bootstrap that estimates the variance function again
@@ -690,11 +718,14 @@ rwls_refit_replicate <- function(initial, record, Z) {
 #' @param response The regenerated response, on the scale the model uses.
 #' @param offset The offset of the fit, or `NULL`.
 #' @param record The variance function [fitWLS()] recorded.
+#' @param with_fit Whether to return the weighted refit too, for a statistic
+#'   that leaves out the columns it aliased ([performWhiteTestBootstrap()]).
 #' @return The Pearson residuals of the weighted refit, or `NULL` when the
-#'   variance function cannot be estimated.
+#'   variance function cannot be estimated; with `with_fit = TRUE`, a list of
+#'   the Pearson residuals, `pearson`, and the refit, `fit`.
 #' @keywords internal
 #' @noRd
-rwls_replicate_residuals <- function(design, response, offset, record) {
+rwls_replicate_residuals <- function(design, response, offset, record, with_fit = FALSE) {
   initial <- if (is.null(record$initial_weights)) {
     stats::lm.fit(design, response, offset = offset)
   } else {
@@ -708,7 +739,8 @@ rwls_replicate_residuals <- function(design, response, offset, record) {
     return(NULL)
   }
   refit <- stats::lm.wfit(design, response, variance$weights, offset = offset)
-  refit$residuals * sqrt(variance$weights)
+  pearson <- refit$residuals * sqrt(variance$weights)
+  if (isTRUE(with_fit)) list(pearson = pearson, fit = refit) else pearson
 }
 
 #' Evaluate without the warning of a residual floored before its logarithm

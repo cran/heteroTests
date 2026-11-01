@@ -46,17 +46,36 @@
 # performNCVTest(), performSpreadLevelTest(), performDavidianCarrollTest() and
 # performVarianceFormTest(), with fitWLS() (rcontext_second_formula(),
 # rcontext_formula_rows()), which match `data` as every test built on the
-# context does (decision 31); the other tests still
-# prepare the model and data with rdata_or_model_frame() and
-# prepare_model_data_for_test().
+# context does (decision 31), and (increment 8) the resampling tests,
+# performWhiteTestBootstrap() and performWildBootstrapTest(),
+# bootstrapTestStatistic() and the robust tests performWhiteTestRobust() and
+# performBPTestRobust(), which refit their replicates on the stored design
+# (rreplicate_lm(), R/bootstrap_methods.R). Since increment 9 a fit with
+# na.action = na.exclude is read as the same fit with na.omit, which drops
+# the same rows: the checks of the model and every test read its residuals,
+# fitted values, weights and leverages without the padding (rmodel_unpad(),
+# rcontext_unpad()), and an output with one value per row is padded as
+# naresid() pads it. Increment 10 removed the preparation of the model and
+# data that the tests made before the context (prepare_model_data_for_test(),
+# rdata_or_model_frame(), rcheck_data_rows() and
+# rcheck_rows_after_cleaning()), and the functions outside the tests that read
+# `data` row by row match it through the alignment of the context
+# (rcontext_data_rows()): recommendRemediationStrategies(),
+# generateHeteroRecommendations() and generics::augment() of the results of
+# the runner; the runners map the data of a tidymodels workflow to the
+# variables of its engine (R/ecosystem_integration.R) and refuse a grouped run
+# of a fitWLS() fit (rrefuse_grouped_fitwls(), R/runHeteroTests.R). Since
+# increment 11 the context refuses a MASS::rlm() fit (rrefuse_rlm(), decision 4
+# of the design), which every test built on it tested as an lm.
 
 #' Build the model context of a test
 #'
 #' Runs the refusals every test makes first: a model that is not an `lm` or a
 #' least-squares `glm`, a `survey::svyglm()` fit
-#' ([rrefuse_non_gaussian_glm()]), a multivariate `lm` ([rcontext_kind()]),
-#' and a model frame that `model = FALSE` rebuilt from data that changed after
-#' the fit ([rcheck_model_frame()], with or without `data`). It then takes the
+#' ([rrefuse_non_gaussian_glm()]), a multivariate `lm` and a `MASS::rlm()`
+#' fit ([rcontext_kind()]), and a model frame that `model = FALSE` rebuilt
+#' from data that changed after the fit ([rcheck_model_frame()], with or
+#' without `data`). It then takes the
 #' parts of the fit, and, when `data` is given, matches its rows to the
 #' observations ([rcontext_align()]). The messages are those the tests gave;
 #' on a call with more than one defect, the first one reported may differ.
@@ -85,10 +104,15 @@
 #'   [performRankPermutationTest()]. Those that are not columns of the model
 #'   frame make the alignment stricter for data taken in the order of the fit
 #'   ([rcontext_align()]).
+#' @param beyond `NULL`, or a logical that says whether the caller reads
+#'   columns of its own data beyond the model frame, when `data` is not the
+#'   data it reads: the data of a workflow mapped to the variables of its
+#'   engine, whose other columns `augment()` binds (increment 10). `NULL`
+#'   decides it from `need` and `reads`.
 #' @return A list of class `ht_model_context`:
 #'   \describe{
 #'     \item{`model`}{the fit.}
-#'     \item{`kind`}{`"lm"`, `"glm_gaussian"`, `"gam"`, `"fitwls"` or `"rlm"`.}
+#'     \item{`kind`}{`"lm"`, `"glm_gaussian"`, `"gam"` or `"fitwls"`.}
 #'     \item{`frame`}{the model frame, `stats::model.frame(model)`.}
 #'     \item{`obs_id`}{the names of the observations, in the order of the fit.}
 #'     \item{`na_action`}{`model$na.action`.}
@@ -119,7 +143,7 @@
 #' @keywords internal
 #' @noRd
 rmodel_context <- function(model, data = NULL, fn, test_label = fn, need = character(),
-                           reads = character()) {
+                           reads = character(), beyond = NULL) {
   # The function the user called, named by the refusals of `data`. It is
   # looked for only when one is made, so a call that is not refused does not
   # search the stack (rtest_name()).
@@ -166,7 +190,12 @@ rmodel_context <- function(model, data = NULL, fn, test_label = fn, need = chara
     # A frame that model = FALSE rebuilt from data that changed after the fit,
     # with or without `data` (#130).
     rcheck_model_frame(model, frame, caller)
-    design <- stats::model.matrix(model)
+    # model.matrix() of an mgcv::gam() fit with na.exclude pads the design with
+    # NA rows at the rows the fit dropped (model.matrix.gam()); read as the
+    # same fit with na.omit it is the design of the twin, one row per
+    # observation (B13, from the review of increment 9). The design of an lm
+    # or a glm is not padded either way.
+    design <- stats::model.matrix(rmodel_as_na_omit(model))
   }
   offset <- stats::model.offset(frame)
   ctx <- structure(
@@ -195,9 +224,11 @@ rmodel_context <- function(model, data = NULL, fn, test_label = fn, need = chara
   if (!is.null(data)) {
     # Does the test read columns of `data` beyond the model frame, which the
     # comparison of the alignment cannot check?
-    beyond <- length(need) > 0L ||
-      (is.data.frame(data) && any(reads %in% setdiff(names(data), names(frame))))
-    aligned <- rcontext_align(ctx, data, caller, test_label, beyond)
+    if (is.null(beyond)) {
+      beyond <- length(need) > 0L ||
+        (is.data.frame(data) && any(reads %in% setdiff(names(data), names(frame))))
+    }
+    aligned <- rcontext_align(ctx, data, caller, test_label, isTRUE(beyond))
     ctx$rows <- aligned$rows
     ctx$alignment <- aligned$alignment
   }
@@ -215,42 +246,184 @@ rstop_model_context <- function(message) {
   ))
 }
 
-#' Refuse an `mgcv::gam()` fit with smooth terms
+#' Is an `mgcv::gam()` fit the least-squares fit of its stored design?
 #'
-#' A Gaussian `mgcv::gam()` fit without smooth terms is the least-squares fit
-#' of its design, the fit of the Gaussian `glm`. A smooth term is penalised
-#' unless it is fixed (`s(x, fx = TRUE)`), and a penalised fit is not the
-#' least-squares fit of its design: its coefficients do not solve the
-#' least-squares equations, and a test that fits that design again, its
-#' segments or its quantiles, tests an unpenalised regression the model is not.
-#' Whether the tests take such a fit is a question of the contract left to the
-#' last step of the migration, with `MASS::rlm()` (increment 11 of the design
-#' of the model context); until then the tests of increment 2 refuse every fit
-#' with smooth terms, fixed ones included, decided on 2026-10-18, and those of
-#' increment 1 test it as before 0.16.0.
+#' A Gaussian `mgcv::gam()` fit is tested on its stored design, the basis of
+#' its smooths and its parametric columns (`model.matrix()`). A smooth term is
+#' penalised unless it is fixed (`s(x, fx = TRUE)`), and a penalised fit is not
+#' the least-squares fit of that design: its coefficients do not solve the
+#' least-squares equations, and its residuals are not orthogonal to the
+#' design. A fit without smooth terms, or whose smooths are all fixed, is the
+#' least-squares fit, and every test treats it as one, those that fit the
+#' design again included (decision 38 of the design of the model context,
+#' decided by the author on 2026-10-29). Which it is, is decided from the fit,
+#' rather than from the arguments of its smooths: the least-squares refit of
+#' the stored design, with the weights and the offset of the fit, gives its
+#' residuals to `1e-8` of the largest residual of that refit, plus `1e3`
+#' times the machine epsilon of the largest absolute value of the response
+#' and of the offset, the rounding of a fit on that scale. The line is drawn
+#' on the residuals, not on the spread of the response, so that it does not
+#' depend on how the model is written: an offset, or a trend the design
+#' fits, of any size, leaves the residuals as they are (from the review of
+#' increment 11, where a penalised fit with an offset of `1e7` passed a line
+#' on the spread of the response, and the same fit written as
+#' `(y - offset) ~ ...` did not). In the measurement of that review, the
+#' residuals of a fixed smooth, or of a `gam` without smooth terms, were
+#' within `1e-10` of those of the refit, or, with a mean or an offset up to
+#' `1e12`, within 79 epsilon of its scale; those of a penalised fit were 0.11
+#' of the largest residual away, and on `contract_data()` a smoothing
+#' parameter of `1e-10` left them within `2.2e-9` of it, and one of `1e-9`
+#' within `2.2e-8`. [rleast_squares_reproduces()], the check of
+#' [bootstrapTestStatistic()] for the other fits, keeps its line on the spread
+#' of the response.
 #'
 #' @param ctx The model context.
-#' @param fn Character scalar naming the calling test.
+#' @return `TRUE` for a fit that is not a `gam`, or a `gam` that is the
+#'   least-squares fit of its design; `FALSE` otherwise.
+#' @keywords internal
+#' @noRd
+rgam_least_squares <- function(ctx) {
+  if (!identical(ctx$kind, "gam")) {
+    return(TRUE)
+  }
+  y <- unname(ctx$response)
+  refit <- tryCatch(
+    if (is.null(ctx$weights)) {
+      stats::lm.fit(ctx$design, y, offset = ctx$offset)
+    } else {
+      stats::lm.wfit(ctx$design, y, ctx$weights, offset = ctx$offset)
+    },
+    error = function(e) NULL
+  )
+  if (is.null(refit) || anyNA(y)) {
+    return(FALSE)
+  }
+  least_squares <- unname(refit$residuals)
+  gap <- max(abs(least_squares - unname(rcontext_unpad(ctx, ctx$residuals))))
+  rounding <- 1e3 * .Machine$double.eps *
+    (max(abs(y)) + if (is.null(ctx$offset)) 0 else max(abs(ctx$offset)))
+  isTRUE(gap <= 1e-8 * max(abs(least_squares)) + rounding)
+}
+
+#' Does an `mgcv::gam()` fit have a penalised term?
+#'
+#' A smooth term with a penalty matrix (`s(x)`, as opposed to
+#' `s(x, fx = TRUE)`), or a parametric term penalised through `paraPen`.
+#'
+#' @param model An `mgcv::gam()` fit.
+#' @return Logical scalar.
+#' @keywords internal
+#' @noRd
+rgam_penalised <- function(model) {
+  penalties <- vapply(model$smooth %||% list(), function(s) length(s$S) > 0L, logical(1))
+  any(penalties) || length(model$paraPen) > 0L
+}
+
+#' Refuse a penalised `mgcv::gam()` fit, in a test that needs least squares
+#'
+#' Decision 37 of the design of the model context (decided by the author on
+#' 2026-10-29): a penalised `mgcv::gam()` fit, whose residuals are not those
+#' of the least-squares fit of its stored design ([rgam_least_squares()]), is
+#' tested on that design, the basis of its smooths, by every test that reads
+#' only its residuals, its fitted values, columns of `data` or its design as
+#' the regressors of an auxiliary regression; and refused by every test that
+#' fits it again by least squares, its segments, its quantiles, a design
+#' augmented by its fitted values, the replicates of a bootstrap or a weighted
+#' refit (`why = "refit"`, `"replicate"`, `"fitwls"`), and by every test whose
+#' null distribution is derived for the least-squares residuals of its design,
+#' through the residual-maker of that design (`why = "null"`:
+#' Harrison-McCabe's and Szroeter's tests). Before increment 11 the tests of
+#' increment 2, the White bootstrap and the robust Breusch-Pagan test refused
+#' every fit with smooth terms, fixed ones included (decision 23), and the
+#' others took it as before 0.16.0.
+#'
+#' @param ctx The model context.
+#' @param fn Character scalar naming the calling function.
+#' @param why Why least squares is needed: the test fits the design again, a
+#'   bootstrap fits each replicate again, [fitWLS()] refits it by weighted
+#'   least squares, or the null distribution is derived for least-squares
+#'   residuals.
 #' @return `NULL`, invisibly; called for the error, of class
 #'   `heteroTests_model_context_error`.
 #' @keywords internal
 #' @noRd
-rrefuse_smooth_gam <- function(ctx, fn) {
-  smooths <- ctx$model$smooth
-  if (!identical(ctx$kind, "gam") || length(smooths) == 0L) {
+rrefuse_penalised_gam <- function(ctx, fn, why = c("refit", "replicate", "fitwls", "null")) {
+  why <- match.arg(why)
+  if (rgam_least_squares(ctx)) {
     return(invisible(NULL))
   }
+  smooths <- ctx$model$smooth
   labels <- vapply(smooths, function(s) as.character(s$label %||% "a smooth"), character(1))
+  terms_named <- if (length(labels) > 0L) sprintf(" (%s)", paste(labels, collapse = ", ")) else ""
+  penalised <- rgam_penalised(ctx$model)
+  reason <- switch(why,
+    refit = "which the test fits again",
+    replicate = "which each replicate of the bootstrap fits again",
+    fitwls = paste0("which fitWLS() refits by weighted least squares",
+                    if (penalised) ", without the penalty"),
+    null = "for which the null distribution of the test is derived"
+  )
+  verb <- if (identical(why, "fitwls")) "refit" else "test"
+  if (!penalised) {
+    # A fit without a penalised term whose residuals are not those of the
+    # least-squares fit of its design: mgcv's own fit on an ill-conditioned
+    # design, as one with a regressor far from zero (`x3 = 1e4 + x2`, where
+    # its residual sum of squares was 169.1 against 41.9 for least squares),
+    # or a fit changed after it was fitted. It is not called penalised (from
+    # the second and third reviews of increment 11).
+    rstop_model_context(sprintf(
+      paste0(
+        "%s() cannot %s this mgcv::gam() fit%s: its residuals are not those of the ",
+        "least-squares fit of its design, the basis of its smooths, %s, although none of ",
+        "its terms is penalised. mgcv's fit is not that fit on an ill-conditioned design, ",
+        "such as one with a regressor far from zero: centre that regressor, or fit the ",
+        "model with lm(). Otherwise the fit was changed after it was fitted: refit it."
+      ),
+      fn, verb, terms_named, reason
+    ))
+  }
   rstop_model_context(sprintf(
     paste0(
-      "%s() cannot test an mgcv::gam() fit with smooth terms (%s): a smooth term is ",
-      "usually penalised, and a penalised fit is not the least-squares fit of its design, ",
-      "which the test fits again. Whether the tests take such a fit is left to a later ",
-      "step of the package. Refit the model with lm() or glm(), with a parametric term ",
-      "such as splines::ns() in place of each smooth."
+      "%s() cannot %s a penalised mgcv::gam() fit%s: its residuals are not those of the ",
+      "least-squares fit of its design, the basis of its smooths, %s. Fix its smooths, ",
+      "s(x, fx = TRUE), so that it is that fit, or refit the model with lm() and a ",
+      "parametric term such as splines::ns() in place of each smooth."
     ),
-    fn, paste(labels, collapse = ", ")
+    fn, if (identical(why, "fitwls")) "refit" else "test", terms_named, reason
   ))
+}
+
+#' The leverages of the observations, on the design the tests read
+#'
+#' The diagonal of the hat matrix of the weighted design,
+#' \eqn{\sqrt{W} X (X' W X)^{-1} X' \sqrt{W}}, one value per observation of
+#' the fit, without the padding of `na.exclude`, which the null-imposed
+#' bootstraps divide the residuals by. For an `lm` or a Gaussian `glm`,
+#' `hatvalues()`, as before. An `mgcv::gam()` fit has no QR decomposition of
+#' an `lm`, and `hatvalues()` stopped on it ("lm object does not have a proper
+#' 'qr' component"); its leverages are those of its stored design, from a QR
+#' decomposition of it with the prior weights, at the tolerance of `lm()`
+#' (since increment 11 of the model context, decision 38: only a `gam` that is
+#' the least-squares fit of that design reaches the bootstraps).
+#'
+#' @param model The fitted model.
+#' @param design The design of the fit, one row per observation, or `NULL`
+#'   for that of the fit.
+#' @return Numeric vector of leverages, one per observation.
+#' @keywords internal
+#' @noRd
+rmodel_leverage <- function(model, design = NULL) {
+  if (!inherits(model, "gam")) {
+    return(rmodel_unpad(model, stats::hatvalues(model)))
+  }
+  if (is.null(design)) {
+    design <- stats::model.matrix(rmodel_as_na_omit(model))
+  }
+  weights <- rleast_squares_weights(model)
+  weighted <- if (is.null(weights)) design else sqrt(weights) * design
+  decomposition <- qr(weighted, tol = 1e-7)
+  q <- qr.Q(decomposition)[, seq_len(decomposition$rank), drop = FALSE]
+  unname(rowSums(q^2))
 }
 
 # The names of the observations, in the order of the fit: those of its
@@ -321,16 +494,20 @@ rcontext_frame_from_data <- function(model, data) {
 #' `glm` that is not a least-squares fit, each with the message every test
 #' gives since 0.15.0. A multivariate `lm`, `lm(cbind(y1, y2) ~ x)`, which
 #' inherits from `lm`, is refused next: the tests take one response, and before
-#' 0.16.0 they stopped on it with a coercion error.
+#' 0.16.0 they stopped on it with a coercion error. Then a `MASS::rlm()` fit,
+#' an `lm` by class, which every test tested as an `lm` until increment 11 of
+#' the design of the model context ([rrefuse_rlm()], decision 4).
 #'
-#' A Gaussian `mgcv::gam()` fit, a `glm` by class, is accepted as before
-#' 0.16.0; whether a penalised fit with smooth terms is an input the tests
-#' justify is left to the last step of the migration, with `MASS::rlm()`.
+#' A Gaussian `mgcv::gam()` fit, a `glm` by class, is accepted, and tested on
+#' its stored design, the basis of its smooths. A penalised one is refused by
+#' the tests that need the least-squares fit of that design, each through
+#' [rrefuse_penalised_gam()] (decision 37), and one that is that fit is taken
+#' by every test (decision 38, [rgam_least_squares()]).
 #'
 #' @param model The fitted model.
 #' @param fn Character scalar naming the calling test.
 #' @return `"gam"` (an `mgcv::gam()` fit), `"glm_gaussian"`, `"fitwls"` (a
-#'   [fitWLS()] fit), `"rlm"` (a `MASS::rlm()` fit) or `"lm"`.
+#'   [fitWLS()] fit) or `"lm"`.
 #' @keywords internal
 #' @noRd
 rcontext_kind <- function(model, fn) {
@@ -341,6 +518,7 @@ rcontext_kind <- function(model, fn) {
       sprintf("%s() needs a model with one response; `model` has %d.", fn, responses)
     )
   }
+  rrefuse_rlm(model, fn)
   if (inherits(model, "gam")) {
     return("gam")
   }
@@ -350,10 +528,101 @@ rcontext_kind <- function(model, fn) {
   if (!is.null(attr(model, "variance_function"))) {
     return("fitwls")
   }
-  if (inherits(model, "rlm")) {
-    return("rlm")
-  }
   "lm"
+}
+
+#' Refuse a `MASS::rlm()` fit
+#'
+#' A `MASS::rlm()` fit is an `lm` by class, and is an M-estimate: its
+#' coefficients minimise a robust loss of the residuals, by iteratively
+#' reweighted least squares with weights that depend on the residuals, so its
+#' residuals are not least-squares residuals: they are orthogonal to the
+#' design only in the metric of those robustness weights. The null
+#' distributions of the tests are derived for least-squares residuals. Until
+#' increment 11 of the design of the model context every test built on the
+#' context tested such a fit as an `lm` (37 tests on the design of
+#' `contract_data()`, the other two refusing it as a weighted fit), and the
+#' studentized Breusch-Pagan statistic refitted its design by least squares,
+#' so that it tested another fit (9.04 where Koenker's test gave 8.74 on the
+#' residuals of the M-estimate). Decided on 2026-10-18 (decision 4): it is
+#' refused, with the class of the context, so that the refusal is final in the
+#' runners (decision 6). [fitRobust()] returns such a fit. [fitWLS()], which
+#' fits its variance function to the residuals of the fit, refuses it too.
+#'
+#' @param model The fitted model.
+#' @param fn Character scalar naming the calling function.
+#' @return `NULL`, invisibly; called for the error, of class
+#'   `heteroTests_model_context_error`.
+#' @keywords internal
+#' @noRd
+rrefuse_rlm <- function(model, fn) {
+  if (!inherits(model, "rlm")) {
+    return(invisible(NULL))
+  }
+  lm_call <- rrlm_lm_call(model)
+  # The tests test the fit; fitWLS() refits it; augment(), the advice and
+  # autoCompareRemediations() read its residuals.
+  refits <- identical(fn, "fitWLS")
+  verb <- if (refits) {
+    "refit"
+  } else if (fn %in% c("augment", "recommendRemediationStrategies", "autoCompareRemediations")) {
+    "take"
+  } else {
+    "test"
+  }
+  advice <- if (is.null(lm_call)) {
+    sprintf("%s the lm() fit of the same model instead.", if (refits) "Pass" else "Test")
+  } else if (refits) {
+    sprintf("Pass the lm() fit of the same formula instead, fitWLS(%s).", lm_call)
+  } else {
+    sprintf("Test the lm() fit of the same formula instead, %s.", lm_call)
+  }
+  rstop_model_context(sprintf(
+    paste0(
+      "%s() cannot %s a MASS::rlm() fit: an rlm fit is an M-estimate, whose residuals are ",
+      "not least-squares residuals, and %s. %s"
+    ),
+    fn,
+    verb,
+    if (refits) {
+      "fitWLS() fits its variance function to least-squares residuals"
+    } else {
+      "the null distributions of the tests assume least squares"
+    },
+    advice
+  ))
+}
+
+#' The `lm()` call of the model a `MASS::rlm()` fit estimated
+#'
+#' The call of the fit with `lm` in place of `rlm`, its formula and the
+#' arguments `lm()` takes, `data`, `weights`, `subset`, `na.action`,
+#' `offset` and `contrasts`, as the call holds them, and without the
+#' arguments of the M-estimation (`psi`, `method`, `maxit`, `init`,
+#' `scale.est`, `k2`, `acc`, `test.vec`, `wt.method`, `lqs.control`, `c`
+#' and the others `lm()` does not take). The formula is that of the fit, so
+#' that a formula held in a variable is written out. `NULL` for a fit without
+#' a two-sided formula, as one made with the matrix interface, `rlm(x, y)`,
+#' whose `formula()` is empty.
+#'
+#' @param model A `MASS::rlm()` fit.
+#' @return Character scalar, the call deparsed, or `NULL`.
+#' @keywords internal
+#' @noRd
+rrlm_lm_call <- function(model) {
+  f <- tryCatch(stats::formula(model), error = function(e) NULL)
+  if (!inherits(f, "formula") || length(f) != 3L) {
+    return(NULL)
+  }
+  # The formula as a call, without the class and the environment of a
+  # formula object, which deparse() would write out.
+  f <- as.call(as.list(f))
+  call <- model$call
+  args <- if (is.call(call)) as.list(call)[-1L] else list()
+  named <- names(args) %||% rep("", length(args))
+  kept <- c("data", "weights", "subset", "na.action", "offset", "contrasts")
+  lm_call <- as.call(c(list(as.name("lm"), f), args[named %in% kept]))
+  tryCatch(deparse1(lm_call, collapse = " "), error = function(e) NULL)
 }
 
 #' Match the rows of `data` to the observations of the fit
@@ -636,8 +905,7 @@ rformula_constants <- function(formula, names) {
 #' Check that the fit reproduces itself
 #'
 #' The parts of the context must have one value per fitted observation, the
-#' rows of `data` must be distinct, and, but for a `MASS::rlm()` fit, whose
-#' residuals are those of an M-estimate, the fit must be the least-squares fit
+#' rows of `data` must be distinct, and the fit must be the least-squares fit
 #' it says it is: its response must be its design times its coefficients, plus
 #' its offset, plus its residuals, and its residuals must be orthogonal to the
 #' columns of its design in the metric of its weights. A fit whose residuals,
@@ -654,13 +922,15 @@ rformula_constants <- function(formula, names) {
 #' \eqn{\epsilon |\bar y|}, so a response near `1e11` with a residual standard
 #' deviation of 2 leaves scores that the first term alone refuses. In a sweep of
 #' `lm` and Gaussian `glm` fits with 120 to 10,000 observations and responses
-#' up to `1e14`, the largest score of a valid fit was 0.04 of that term. A
-#' `mgcv::gam()` fit is penalised, so its residuals are not orthogonal to its
-#' design, and only its first check is made. An edited coefficient leaves the
+#' up to `1e14`, the largest score of a valid fit was 0.04 of that term. An
+#' `mgcv::gam()` fit with penalised smooth terms is not the least-squares fit
+#' of its design, so its residuals are not orthogonal to it, and only the first
+#' check is made on a `gam`. An edited coefficient leaves the
 #' residuals unchanged, so only the first check sees it, at `1e-7` of the
 #' largest term: an edit of 0.5 goes undetected once the response is above
 #' about `1e7`. The checks guard against accidental edits; they are not a proof
-#' that a fit is unedited.
+#' that a fit is unedited. A `MASS::rlm()` fit, an M-estimate, was let through
+#' unchecked until the context refused it (increment 11, [rrefuse_rlm()]).
 #'
 #' The tests call it after [rvalidateModelInputs()], which refuses residuals
 #' and coefficients that are not finite with its own messages. Its refusals
@@ -686,10 +956,47 @@ rvalidate_model_context <- function(ctx, tol = 1e-7) {
       "Internal error: two observations of the fit were matched to one row of `data`."
     )
   }
-  if (identical(ctx$kind, "rlm") || n == 0L) {
+  if (n == 0L) {
     return(invisible(ctx))
   }
   coefs <- stats::coef(ctx$model)
+  # A design without one column for each coefficient cannot reproduce the
+  # fit: the terms of fitWLS() of an mgcv::gam() fit with smooth terms rebuild
+  # the variables of the formula, for the coefficients of the basis of its
+  # smooths (since increment 8 of the model context, where the tests stopped
+  # with "(subscript) logical subscript too long"). Refitting such a fit
+  # gives it again, so its message points to the gam, or to parametric terms.
+  if (length(coefs) != ncol(ctx$design)) {
+    smooth <- function(expr) {
+      if (!is.call(expr)) {
+        return(FALSE)
+      }
+      head <- expr[[1L]]
+      if (is.call(head) && identical(head[[1L]], as.name("::"))) {
+        head <- head[[3L]]
+      }
+      if (is.name(head) && as.character(head) %in% c("s", "te", "ti", "t2")) {
+        return(TRUE)
+      }
+      any(vapply(as.list(expr)[-1L], smooth, logical(1)))
+    }
+    hint <- if (identical(ctx$kind, "fitwls") && smooth(ctx$model$call)) {
+      paste0(
+        ", as those of fitWLS() of an mgcv::gam() fit with smooth terms do, which refitting ",
+        "gives again. Test the gam itself, or give fitWLS() a fit with a parametric term ",
+        "such as splines::ns() in place of each smooth."
+      )
+    } else {
+      ". Refit the model."
+    }
+    rstop_model_context(sprintf(
+      paste0(
+        "The fitted model does not reproduce its residuals from its design and coefficients: ",
+        "its terms rebuild a design of %d columns for its %d coefficients%s"
+      ),
+      ncol(ctx$design), length(coefs), hint
+    ))
+  }
   keep <- !is.na(coefs)
   X <- ctx$design[, keep, drop = FALSE]
   b <- unname(coefs[keep])
@@ -729,9 +1036,12 @@ rvalidate_model_context <- function(ctx, tol = 1e-7) {
 
 #' A vector of the fit without the padding of `na.exclude`
 #'
-#' `residuals()` and `fitted()` of a fit with `na.action = na.exclude` hold
-#' an `NA` for each row the fit dropped; the context has one value per fitted
-#' observation.
+#' `residuals()`, `fitted()`, `weights()` and `hatvalues()` of a fit with
+#' `na.action = na.exclude` hold an `NA` for each row the fit dropped
+#' ([stats::naresid()]); the context has one value per fitted observation, as
+#' for the same fit with `na.omit`, which drops the same rows. Since increment
+#' 9 of the model context (B13) every test built on it reads them so, and the
+#' checks of the model too ([rvalidateModelInputs()], [rmodel_unpad()]).
 #'
 #' @param ctx The model context.
 #' @param x A vector, padded or not.
@@ -743,6 +1053,51 @@ rcontext_unpad <- function(ctx, x) {
     return(x[-ctx$na_action])
   }
   x
+}
+
+#' A vector of a fit without the padding of `na.exclude`, from the fit
+#'
+#' [rcontext_unpad()] for the code that reads a fit before, or without,
+#' building its context: the checks of the model ([rvalidateModelInputs()],
+#' [rvalidateSampleSize()]) and [bootstrapTestStatistic()], which reads the
+#' fitted values, the leverages and the residuals of the fit before it
+#' matches `data`.
+#'
+#' @param model A fitted model.
+#' @param x A vector, padded or not.
+#' @return `x` without the padded elements.
+#' @keywords internal
+#' @noRd
+rmodel_unpad <- function(model, x) {
+  omitted <- if (is.list(model)) model$na.action
+  if (inherits(omitted, "exclude") && length(x) > NROW(model$residuals)) {
+    return(x[-omitted])
+  }
+  x
+}
+
+#' A fit with `na.exclude` read as the same fit with `na.omit`
+#'
+#' The fit of `na.exclude` and that of `na.omit` drop the same rows and are
+#' the same fit; their `na.action` holds the same rows, of class `"exclude"`
+#' or `"omit"`, and only the first makes `residuals()`, `weights()` and
+#' `fitted()` pad, and `model.matrix()` of an `mgcv::gam()` fit. A reference
+#' implementation that reads them, as `lmtest::bptest()` reads `weights()`
+#' ([rvalidate_against_reference()]), stops on the padding ("incompatible
+#' dimensions"), and the context, which reads the design of a `gam` whole,
+#' took its padded rows for parts of different lengths: each is given the fit
+#' with the class of `na.omit`, so that it reads what it reads on the same fit
+#' with `na.omit` (increment 9 of the model context, B13).
+#'
+#' @param model A fitted model.
+#' @return `model`, its `na.action` of class `"omit"` when it was `"exclude"`.
+#' @keywords internal
+#' @noRd
+rmodel_as_na_omit <- function(model) {
+  if (is.list(model) && inherits(model$na.action, "exclude")) {
+    class(model$na.action) <- "omit"
+  }
+  model
 }
 
 #' The residuals the tests read
@@ -760,12 +1115,28 @@ rcontext_pearson <- function(ctx) {
   rcontext_unpad(ctx, rpearson_residuals(ctx$model))
 }
 
+#' The fitted values the tests read
+#'
+#' `stats::fitted()` of the fit without the padding of `na.exclude`, one value
+#' per observation: on a fit without it, `fitted()` itself, and so what the
+#' tests read before increment 9 of the model context. The tests computed from
+#' the model alone and RESET read it (B13): on a fit with `na.exclude` they
+#' stopped on the padding, or refused it with the checks of the model.
+#'
+#' @param ctx The model context.
+#' @return Numeric vector, one value per observation, named by observation.
+#' @keywords internal
+#' @noRd
+rcontext_fitted <- function(ctx) {
+  rcontext_unpad(ctx, stats::fitted(ctx$model))
+}
+
 #' The fitted mean, computed from the coefficients
 #'
 #' The fitted values of the fit, the linear predictor with the total offset,
 #' one value per observation, in the order of the fit and without the padding
-#' of `na.exclude`: for an `lm`, a `fitWLS()` fit, a `MASS::rlm()` fit and an
-#' `mgcv::gam()` fit, the design times the coefficients that were not aliased,
+#' of `na.exclude`: for an `lm`, a `fitWLS()` fit and an `mgcv::gam()` fit,
+#' the design times the coefficients that were not aliased,
 #' in the order of the pivot of the fit, plus the offset, as
 #' `stats::predict.lm()` computes it; for a Gaussian `glm`, its fitted values.
 #' They are what `fitted()` holds, and so what `predict(type = "response")`
@@ -813,9 +1184,7 @@ rcontext_mean <- function(ctx) {
 #' @param variable Character scalar, the name of the variable.
 #' @param argument Character scalar, the argument of the test that names it.
 #' @param test_label Character scalar naming the test.
-#' @param ids The names of the observations `values` holds: those of the fit,
-#'   or, for a fit with `na.exclude` that [performPesaranTest()] reads by
-#'   position, the row names of `data`.
+#' @param ids The names of the observations `values` holds, those of the fit.
 #' @return `NULL`, invisibly; called for the error.
 #' @keywords internal
 #' @noRd
@@ -869,6 +1238,96 @@ rcontext_rows <- function(ctx, data) {
     return(ctx$frame)
   }
   rdata_with_fit_rows(data[ctx$rows, , drop = FALSE], ctx$obs_id)
+}
+
+#' The rows of `data` that hold the observations of a fit, for the functions
+#' that read `data` row by row
+#'
+#' [recommendRemediationStrategies()] correlates the residuals of the fit with
+#' the columns of `data` row by row, [generateHeteroRecommendations()] hands
+#' `data` to the tests and to the recommendations, and `generics::augment()` of
+#' the results of the runner binds the columns of the fit to its rows. Until
+#' increment 10 of the model context they read the i-th row of `data` with the
+#' i-th observation: named data in another order than the fit gave the value
+#' of other rows, without an error, and data of another number of rows were
+#' refused (since increment 9). They now match `data` to the observations as
+#' every test does, by the alignment of the context
+#' ([rcontext_data_match()]): named data in any order, numbered data in the
+#' order of the fit, and the full data of a fit that dropped rows give the
+#' value of the rows of the fit in its order, and what the alignment refuses
+#' is refused. They read every column of `data`, beyond the model frame too,
+#' so data taken in the order of the fit whose rows tie on every compared
+#' column are refused, as by a test that reads such a column (`reads`,
+#' [rcontext_align()]). Grouped data (`dplyr::group_by()`) keep their groups
+#' on the rows they keep, so that the analysis of a grouped tibble is grouped
+#' whether or not the fit dropped rows (from the review of increment 10).
+#'
+#' @param model The fitted model.
+#' @param data A data frame.
+#' @param fn Character scalar naming the calling function, for the messages.
+#' @param test_label Character scalar naming it in the messages on the rows
+#'   `data` lacks ([rstop_data_rows()]).
+#' @return `data` itself when its rows are those of the fit, in its order;
+#'   otherwise the rows of `data` that hold the observations, in the order of
+#'   the fit: of a grouped tibble, those rows of it, grouped as it is; of any
+#'   other data, a data frame under the names of the observations
+#'   ([rcontext_rows()]).
+#' @keywords internal
+#' @noRd
+rcontext_data_rows <- function(model, data, fn, test_label = paste0(fn, "()")) {
+  ctx <- rcontext_data_match(model, data, fn = fn, test_label = test_label)
+  if (identical(ctx$rows, seq_len(nrow(data)))) {
+    return(data)
+  }
+  if (inherits(data, "grouped_df")) {
+    return(data[ctx$rows, , drop = FALSE])
+  }
+  rcontext_rows(ctx, as.data.frame(data))
+}
+
+#' Match the rows of `data` to the observations, for a function outside the
+#' tests
+#'
+#' The model context of `model` with `data` aligned ([rmodel_context()]), for
+#' the functions of [rcontext_data_rows()] and `generics::augment()`, which read
+#' every column of `data`. Its refusals are those of the tests and name the
+#' function; data that lack a variable of the model, which the alignment needs
+#' to compare the rows with the model frame, are refused with a message that
+#' says what to pass, where the checks of `data` gave "The following variables
+#' are missing from input data", without the function (from the review of
+#' increment 10).
+#'
+#' @inheritParams rcontext_data_rows
+#' @param beyond Passed to [rmodel_context()]: `NULL` decides it from the
+#'   columns of `data`.
+#' @return The model context, its `rows` and `alignment` set.
+#' @keywords internal
+#' @noRd
+rcontext_data_match <- function(model, data, fn, test_label = paste0(fn, "()"), beyond = NULL) {
+  tryCatch(
+    rmodel_context(model, data, fn = fn, test_label = test_label, reads = names(data),
+                   beyond = beyond),
+    error = function(e) {
+      message <- conditionMessage(e)
+      pattern <- "^The following variables are missing from input data: (.*?)\\. Verify.*$"
+      if (!grepl(pattern, message, perl = TRUE)) {
+        stop(e)
+      }
+      absent <- sub(pattern, "\\1", message, perl = TRUE)
+      stop(
+        sprintf(
+          paste(
+            "%s() matches the rows of `data` to the observations of the fit by the variables",
+            "of the model, and `data` lacks %s. Pass the data the model was fitted to, with",
+            "the columns to examine beside them, such as cbind(model.frame(model), columns)",
+            "for columns with one row per observation in the order of the fit."
+          ),
+          fn, absent
+        ),
+        call. = FALSE
+      )
+    }
+  )
 }
 
 #' The residuals and the rows of a group test, without the observations
@@ -932,11 +1391,13 @@ rcontext_group_rows <- function(ctx, data, group) {
 #' and the residuals are the Pearson residuals of the fit
 #' ([rcontext_pearson()]), which refuses a zero weight, as before.
 #'
-#' A fit with `na.action = na.exclude` is read as before until the step of
-#' the model context that moves `na.exclude` (B13): its Pearson residuals,
-#' padded with `NA` at the rows the fit dropped, against the rows of `data`,
-#' or of the model frame, by position, which must then hold the rows of the
-#' fit in its order ([rcheck_data_in_fit_order()]).
+#' A fit with `na.action = na.exclude` is read as the same fit with `na.omit`,
+#' which drops the same rows: its Pearson residuals without the padding, and
+#' the columns at the rows the alignment confirmed (B13, increment 9 of the
+#' model context). Until then the three read its padded residuals against the
+#' rows of `data`, or of the model frame, by position, refused data in another
+#' order, and gave a statistic that was `NA`, or computed with the `NA` of the
+#' rows the fit dropped (decision 29).
 #'
 #' @param ctx The model context.
 #' @param data The `data` argument of the calling test, or `NULL`.
@@ -946,10 +1407,8 @@ rcontext_group_rows <- function(ctx, data, group) {
 #' @param test_label Character scalar naming the test in the messages on rows
 #'   that `data` lacks.
 #' @return A list with `residuals`, the Pearson residuals, `columns`, a named
-#'   list of the columns, each with one value per residual, `ids`, the names
-#'   of the observations they hold (the row names of the rows read, for a fit
-#'   with `na.exclude`), and `padded`, `TRUE` for the residuals of a fit with
-#'   `na.exclude`, read as before.
+#'   list of the columns, each with one value per residual, and `ids`, the
+#'   names of the observations they hold.
 #' @keywords internal
 #' @noRd
 rcontext_columns_at_fit <- function(ctx, data, columns, fn, test_label) {
@@ -959,17 +1418,9 @@ rcontext_columns_at_fit <- function(ctx, data, columns, fn, test_label) {
   }
   roles[!nzchar(roles)] <- columns[!nzchar(roles)]
   # Without `data`, a column the model frame does not hold under its own name
-  # is refused here (M1), for a fit with na.exclude too.
+  # is refused here (M1).
   values <- rcontext_variables(ctx, data, stats::setNames(columns, roles))
-  if (inherits(ctx$na_action, "exclude")) {
-    rows <- if (is.null(data)) ctx$frame else data
-    rcheck_data_matches_model(ctx$model, rows, test_label)
-    residuals <- rpearson_residuals(ctx$model)
-    rcheck_data_in_fit_order(residuals, rows, fn, test_label)
-    values <- stats::setNames(lapply(columns, function(v) rows[[v]]), roles)
-    return(list(residuals = residuals, columns = values, ids = rownames(rows), padded = TRUE))
-  }
-  list(residuals = rcontext_pearson(ctx), columns = values, ids = ctx$obs_id, padded = FALSE)
+  list(residuals = rcontext_pearson(ctx), columns = values, ids = ctx$obs_id)
 }
 
 #' Refuse a panel in which a unit holds two observations of one period
@@ -1030,54 +1481,6 @@ rpanel_cell_key <- function(id_values, time_values) {
   unit <- match(id_values, unique(id_values))
   period <- match(time_values, unique(time_values))
   (unit - 1) * max(c(period, 0L)) + period
-}
-
-#' Refuse an unbalanced panel on the reading of a fit with na.exclude
-#'
-#' [performPesaranTest()] arranges the residuals of a balanced panel in a
-#' matrix of periods by units. Before 0.16.0 a unit observed at fewer periods
-#' than the panel holds stopped the statistic ("number of items to replace is
-#' not a multiple of replacement length"), or, when its number of periods
-#' divides that of the panel, had its residuals recycled over the periods it
-#' lacks, and the test returned a wrong value without an error (N12 of the
-#' design of the model context). The fifth step of the model context refused
-#' such panels on every route (decided by the author on 2026-10-24); since the
-#' pull request of N12 the statistic of an unbalanced panel is computed from
-#' the periods each pair of units shares, as `plm::pcdtest()` computes it, and
-#' the refusal is left to a fit with `na.action = na.exclude`, whose padded
-#' residuals the test reads against the rows of `data` by position until the
-#' step that moves na.exclude (decision 29).
-#'
-#' @param id_values,time_values The units and the periods, one per
-#'   observation, without missing values or repeated pairs.
-#' @param id Character scalar, the name of the column of the units.
-#' @param fn Character scalar naming the calling test.
-#' @return `NULL`, invisibly; called for the error.
-#' @keywords internal
-#' @noRd
-rstop_unbalanced_panel <- function(id_values, time_values, id, fn) {
-  # The periods of each unit, counted in one pass over its distinct pairs.
-  units <- sort(unique(id_values))
-  n_periods <- length(unique(time_values))
-  distinct <- !duplicated(rpanel_cell_key(id_values, time_values))
-  held <- tabulate(match(id_values[distinct], units), nbins = length(units))
-  short <- which(held < n_periods)
-  if (length(short) == 0L) {
-    return(invisible(NULL))
-  }
-  first <- short[1L]
-  rstop_model_context(sprintf(
-    paste0(
-      "%s() reads a fit with na.action = na.exclude by position, on a matrix of periods by ",
-      "units, and needs a balanced panel, every unit observed at the same periods; the ",
-      "panel of the rows of `data` is unbalanced: %d of its %d units %s observed at fewer ",
-      "of its %d periods, %s = %s at %d of them. Refit the model with na.action = na.omit: ",
-      "the statistic of an unbalanced panel is then computed from the periods each pair of ",
-      "units shares, as plm::pcdtest() computes it."
-    ),
-    fn, length(short), length(units), if (length(short) == 1L) "is" else "are", n_periods,
-    id, as.character(units[first]), held[first]
-  ))
 }
 
 #' Warn about the incomplete rows of `data`, dropping nothing

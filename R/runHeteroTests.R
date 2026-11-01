@@ -22,10 +22,12 @@
 #' and [performKoenkerTest()] did so on their own. Streaming saves memory
 #' mainly in White's test, whose auxiliary design is several times wider than
 #' the model matrix; the auxiliary design of the Breusch-Pagan and Koenker
-#' tests is the model matrix itself. And the streaming White test stops on any
-#' model with a factor or a `poly()` term, whose squares are collinear with the
-#' other terms of its auxiliary regression, so that above 100 MB such a model
-#' got a fallback under the name `"white"` where smaller data got White's test.
+#' tests is the model matrix itself. And until 0.17.0 the streaming White test
+#' stopped on any model with a factor or a `poly()` term, whose squares are
+#' collinear with the other terms of its auxiliary regression, so that above
+#' 100 MB such a model got a fallback under the name `"white"` where smaller
+#' data got White's test; since 0.17.0 it drops those terms, as
+#' [performWhiteTest()] does.
 #'
 #' @param model A fitted `lm`, or a `glm` with the Gaussian family and the
 #'   identity link, a model formula, a tidymodels [workflows::workflow] or a
@@ -36,7 +38,28 @@
 #'   [dplyr::group_by()]. When `model` is a formula the data must be supplied.
 #'   With grouped data the model is refitted within each group by evaluating
 #'   its own call on that group, so every variable it uses, including weights,
-#'   offset and subset, must be a column of `data`.
+#'   offset and subset, must be a column of `data`. A fit returned by
+#'   [fitWLS()] is refused with grouped data since 0.17.0: its call does not
+#'   hold the weights it estimated, so each group was tested as the unweighted
+#'   fit of its rows; so is a `MASS::rlm()` fit, which every test refuses. A
+#'   test that refuses the model of a group as the model context refuses a
+#'   model, such as a multivariate `lm` or a penalised `mgcv::gam()` fit given
+#'   a test that needs least squares, stops the grouped run with that refusal
+#'   and its class since 0.17.0, as the run on ungrouped data does; before,
+#'   the group recorded it as a failed test, whose statistic was `NA`. The
+#'   failures of a test for another reason are recorded in its group, as
+#'   before. The data a tidymodels workflow was fitted to are mapped
+#'   to the variables of its engine by the workflow's preprocessing, and the
+#'   model frame of the engine's fit is tested, as without `data` (since
+#'   0.17.0; they were refused). A recipe step skipped on new data that
+#'   changed the outcome or a predictor at the fit, such as
+#'   `step_log(y, skip = TRUE)`, is named in the refusal of such data, and the
+#'   data of a [parsnip::fit_xy()] fit with case weights, whose column the
+#'   fit does not record, are refused. Each result keeps what
+#'   [generics::augment()] needs to map the data in the same way, as
+#'   `attr(, "tidymodels")`, the blueprint as the workflow keeps it: a recipe
+#'   step keeps the environment it was written in, so that a saved result
+#'   carries what that environment holds, as saving the workflow does.
 #' @param tests Character vector of test names to run: any of the names
 #'   [listDiagnostics()] returns, which include those added with
 #'   `registerDiagnostic()`. On a fit returned by [fitWLS()] the resampling
@@ -114,6 +137,13 @@ runHeteroTests <- function(model, data = NULL,
   prepared <- .ht_prepare_model(model, data = data, context = "runHeteroTests()")
 
   if (prepared$grouped && length(prepared$group_splits) > 0) {
+    # A fitWLS() fit is refused before any group is refitted (B11, decision 10
+    # of the design of the model context), and so is a MASS::rlm() fit, which
+    # every test refuses (R6, decision 4): each group was refitted by its call
+    # and its refusals recorded as failures of the group, or, with MASS
+    # attached, the rlm() of each group tested.
+    rrefuse_grouped_fitwls(prepared$model)
+    rrefuse_rlm(prepared$model, "runHeteroTests")
     if (is.null(prepared$fit_factory)) {
       stop(
         "Grouped diagnostics require a formula-based model specification so each group can be refitted.",
@@ -162,8 +192,40 @@ runHeteroTests <- function(model, data = NULL,
     if (prepared$source %in% c("formula", "survey")) {
       output <- rsuite_mark_origin(output, prepared$source)
     }
-    output
+    # What augment() needs of a workflow or a parsnip fit is kept on each result,
+    # so that it maps their data as the runner maps them (rsuite_mark_tidymodels()).
+    rsuite_mark_tidymodels(output, model)
   }
+}
+
+#' Refuse a grouped run of a fitWLS() fit
+#'
+#' A grouped run refits the model within each group by evaluating its own
+#' call on the rows of the group (`.ht_refit_group()`). The call of a
+#' [fitWLS()] fit is that of the model it refitted, without the weights it
+#' estimated, so each group was refitted by ordinary least squares, or with
+#' the prior weights of the model, and tested as such a fit: a test of
+#' another model than the one given, without an error (B11 of the design of
+#' the model context). Estimating the variance function again within each
+#' group is a model of its own, which the caller can fit. Such a run is refused
+#' (decision 10), with the class of the refusals of the model context, which
+#' the runners keep (decision 6).
+#'
+#' @param model The model of the run, after `.ht_prepare_model()`.
+#' @return `NULL`, invisibly; called for the error.
+#' @keywords internal
+#' @noRd
+rrefuse_grouped_fitwls <- function(model) {
+  if (is.null(attr(model, "variance_function"))) {
+    return(invisible(NULL))
+  }
+  rstop_model_context(paste0(
+    "runHeteroTests() cannot run a grouped analysis of a fitWLS() fit: each group is refitted ",
+    "by evaluating the call of the model on its rows, and that call does not hold the weights ",
+    "fitWLS() estimated, so each group would be tested as another fit, without them. Fit ",
+    "fitWLS() within each group and test each fit, or pass the data ungrouped ",
+    "(dplyr::ungroup()) to test the fit as a whole."
+  ))
 }
 
 #' Record that runHeteroTests() fitted the model of a suite itself
@@ -319,11 +381,17 @@ rsuite_mark_origin <- function(suite, origin) {
           suggestions = failure_context$suggestions,
           issue = failure_context$issue
         )
-        if (isTRUE(recover_failures)) {
+        # A grouped run records the failure of a test in a group and goes on,
+        # but a refusal of the model by the model context is final there too
+        # (decision 6): the run stops with it, its class and its message,
+        # where each group recorded it as a failed test of NA (from the review
+        # of increment 11: a penalised gam that a test refuses, a
+        # multivariate lm).
+        if (isTRUE(recover_failures) && !identical(failure_context$issue, "model_context")) {
           return(failure)
         }
         if (failure_context$issue %in% c("data_rows", "model_context")) {
-          # Keep the class of the refusal of `data` (rcheck_data_rows()) or of
+          # Keep the class of the refusal of `data` (rcheck_rows_at()) or of
           # the model by the model context (R/model_context.R), so that a
           # caller can tell it from a failure of the test.
           stop(structure(

@@ -5,12 +5,14 @@
 # fit, were matched by position and gave wrong values without an error. Since
 # 0.15.0 a test that reads `data` first takes the rows the row names pick for
 # the observations of the fit and compares the response and the variables the
-# model frame holds as themselves with the model frame (rcheck_data_rows()),
-# and refuses data that do not reproduce it. Valid calls are unchanged: data
+# model frame holds as themselves with the model frame, and refuses data that
+# do not reproduce it; since 0.16.0 that guard is the alignment step of the
+# model context (rdata_fit_rows() and rcheck_rows_at()). Valid calls are unchanged: data
 # with row names of its own, in any order, and the very tibble or data.table
 # the model was fitted on, give what they gave.
 
-# The tests that read `data`, all through rdata_or_model_frame().
+# The tests that read `data`, all through the alignment of the model context
+# (rmodel_context()) since its eighth step.
 guarded_tests <- c(
   "performWhiteTest", "performWhiteTestStreaming", "performWhiteTestRobust",
   "performBPTest", "performBPTestStreaming", "performBreuschPaganTest",
@@ -74,8 +76,8 @@ guard_run <- function(fn, m, data, recipes = guard_recipes()) {
 
 expect_same_result <- function(object, expected, info) {
   if (is.list(expected) && !is.null(expected$statistic)) {
-    expect_identical(unname(object$statistic), unname(expected$statistic), info = info)
-    expect_identical(object$p.value, expected$p.value, info = info)
+    expect_identical_numbers(unname(object$statistic), unname(expected$statistic), info = info)
+    expect_identical_numbers(object$p.value, expected$p.value, info = info)
     expect_identical(unname(object$parameter), unname(expected$parameter), info = info)
   } else {
     expect_identical(unname(object), unname(expected), info = info)
@@ -127,7 +129,7 @@ test_that("a data frame whose row names were reset, in another order, is refused
     fixed = TRUE
   )
   # The same rows with their own row names are matched by name, as before.
-  expect_identical(
+  expect_identical_numbers(
     performKoenkerTest(m, d[order(d$x), ])$statistic,
     performKoenkerTest(m, d)$statistic
   )
@@ -346,21 +348,17 @@ test_that("a tibble whose incomplete rows a test drops is not matched to other r
   }
   # The tests built on the model context (since 0.16.0) match the rows before
   # they drop any, so the tibble holds the rows of the fit under its original
-  # row numbers and gives the value on the rows of the fit.
-  for (fn in c("performKoenkerTest", "performWhiteTest", "performBPTest", "performGlejserTest")) {
+  # row numbers and gives the value on the rows of the fit. The wild bootstrap
+  # dropped them first, and refused the renumbered rows ("numbers the rows
+  # that are left afresh"), until the eighth step of the model context.
+  for (fn in c("performKoenkerTest", "performWhiteTest", "performBPTest", "performGlejserTest",
+               "performWildBootstrapTest")) {
     expect_same_result(
       guard_run(fn, m, tb),
       guard_run(fn, m, as.data.frame(tb[1:100, ])),
       info = fn
     )
   }
-  # The others still drop them first, and refuse the renumbered rows.
-  expect_error(
-    guard_run("performWildBootstrapTest", m, tb),
-    "numbers the rows that are left afresh",
-    class = "heteroTests_data_rows_error",
-    info = "wild bootstrap"
-  )
   # The group tests match before they drop rows, and were not affected.
   expect_same_result(
     guard_run("performBartlettTest", m, tb),
@@ -376,7 +374,7 @@ test_that("the variables of var_formula are read from rows the guard confirmed",
   m <- lm(y ~ x1 + x2, data = d)
   set.seed(10)
   shuffled <- d[sample(nrow(d)), ]
-  expect_identical(
+  expect_identical_numbers(
     performCookWeisbergTest(m, shuffled, var_formula = ~ group)$statistic,
     performCookWeisbergTest(m, d, var_formula = ~ group)$statistic
   )
@@ -394,7 +392,7 @@ test_that("the variables of var_formula are read from rows the guard confirmed",
     "performCookWeisbergTest() cannot match the rows of `data`",
     fixed = TRUE
   )
-  expect_identical(
+  expect_identical_numbers(
     performCookWeisbergTest(m, shuffled)$statistic,
     performCookWeisbergTest(m, d)$statistic
   )
@@ -464,7 +462,7 @@ test_that("runHeteroTests() and runDiagnostics() stop and fall back on nothing",
     expect_true(is.na(out[[nm]]$statistic), info = nm)
   }
   # The same battery on the data of the fit is unchanged.
-  expect_identical(
+  expect_identical_numbers(
     unname(runHeteroTests(m, d, use_cache = FALSE, progress = FALSE)$koenker$statistic),
     unname(performKoenkerTest(m, d)$statistic)
   )
@@ -591,7 +589,7 @@ test_that("the registry name student_bp checks data as performStudentizedBPTest(
     test_factory$run_test("student_bp", m, arranged),
     class = "heteroTests_data_rows_error"
   )
-  expect_identical(
+  expect_identical_numbers(
     unname(suppressWarnings(runHeteroTests(m, d, tests = "student_bp", use_cache = FALSE,
                                            progress = FALSE))$student_bp$statistic),
     unname(suppressWarnings(performStudentizedBPTest(m, d))$statistic)
@@ -643,14 +641,17 @@ test_that("messages name the function called and say why", {
   wide <- lm(y ~ x1 + x2 + w + o + ypos, data = d)
   expect_error(performKoenkerTest(wide, arranged), "y, x1, x2 and 3 more differ", fixed = TRUE)
   # A tibble the test renumbered when it dropped incomplete rows. The tests
-  # built on the model context drop none and accept it (above).
+  # built on the model context drop none and accept it (above), the wild
+  # bootstrap, the last that dropped them first, since the eighth step; the
+  # preparation of before, which refused it ("numbers the rows that are left
+  # afresh"), went in the tenth.
   dn <- d
   dn$x2[c(3, 7)] <- NA
   tb <- dplyr::as_tibble(dn)
   m_short <- lm(y ~ x1 + x2, data = tb[1:100, ])
-  expect_error(
-    suppressWarnings(performWildBootstrapTest(m_short, tb, B = 9, progress = FALSE)),
-    "^performWildBootstrapTest\\(\\) cannot match.*afresh"
+  set.seed(9)
+  expect_s3_class(
+    suppressWarnings(performWildBootstrapTest(m_short, tb, B = 9, progress = FALSE)), "htest"
   )
   # The scatter diagnostic read by position and could not match the names of
   # a fit to character row names against a tibble ("the row names of `data`
@@ -659,11 +660,11 @@ test_that("messages name the function called and say why", {
   dc <- d
   rownames(dc) <- paste0("obs", seq_len(nrow(dc)))
   m_c <- lm(y ~ x1 + x2, data = dc)
-  expect_identical(
+  expect_identical_numbers(
     performScatterDiagnostic(m_c, dplyr::as_tibble(dc), "x1"),
     performScatterDiagnostic(m, d, "x1")
   )
-  expect_identical(
+  expect_identical_numbers(
     performScatterDiagnostic(m_c, dc, "x1"),
     performScatterDiagnostic(m, d, "x1")
   )
@@ -703,9 +704,10 @@ test_that("a term that depends on the rows is not compared, the others decide", 
       expect_same_result(tests[[k]](m_sub, kept_sub), tests[[k]](m_sub, d), info = info)
     }
   }
-  # The White bootstrap refits each replicate on the model frame, which holds
-  # such a term under its own name, computed on all the rows; the replicate
-  # computes it on the rows it keeps, and is checked from the variables.
+  # The White bootstrap, without `data`, refits each replicate on the stored
+  # design, which holds such a term as the fit computed it, on all the rows
+  # (since the eighth step of the model context; before, on the model frame,
+  # from which the replicate computed it again on the rows it kept).
   m_quad <- lm(formulas[[1]], data = d_na)
   set.seed(3)
   expect_s3_class(suppressWarnings(performWhiteTestBootstrap(m_quad, B = 9)), "htest")
@@ -803,20 +805,26 @@ test_that("a column from outside data does not need telling rows apart", {
   swapped[tied, ] <- swapped[rev(tied), ]
   rownames(swapped) <- NULL
   expect_error(performKoenkerTest(m_wc, swapped), "(weights) differs", fixed = TRUE)
-  # No column at all can be compared: the data cannot be confirmed, by the
-  # tests that still call the guard. The tests built on the model context, the
-  # scatter diagnostic among them since 0.16.0, look for the variables of the
-  # model first, and `d` is not a column of `data`.
+  # No column at all can be compared: the guard cannot confirm the data. The
+  # tests built on the model context, the scatter diagnostic among them since
+  # 0.16.0 and the wild bootstrap since the eighth step, look for the
+  # variables of the model first, and `d` is not a column of `data`; with
+  # them, a model whose every column is computed by a function that is no
+  # longer found compares none. Until the tenth step the guard of the tests
+  # not built on the context (rcheck_data_rows(), removed) was called here.
   d <- data.frame(x = runif(n, 1, 5), z = rnorm(n))
   d$y <- 1 + d$x + d$z + rnorm(n)
-  expect_error(
-    performWildBootstrapTest(lm(d$y ~ d$x + d$z), d, B = 9, progress = FALSE),
-    "no column can be compared", fixed = TRUE
-  )
-  expect_error(
-    performScatterDiagnostic(lm(d$y ~ d$x + d$z), d, "x"),
-    "The following variables are missing from input data: d.", fixed = TRUE
-  )
+  f <- function(v) v
+  m_f <- lm(f(y) ~ f(x) + f(z), data = d)
+  rm(f)
+  expect_error(performKoenkerTest(m_f, d), "no column can be compared", fixed = TRUE)
+  expect_error(performKoenkerTest(m_f, d), class = "heteroTests_data_rows_error")
+  for (call in list(
+    function() performWildBootstrapTest(lm(d$y ~ d$x + d$z), d, B = 9, progress = FALSE),
+    function() performScatterDiagnostic(lm(d$y ~ d$x + d$z), d, "x")
+  )) {
+    expect_error(call(), "The following variables are missing from input data: d.", fixed = TRUE)
+  }
 })
 
 test_that("a term that depends on the first row only is recognised", {

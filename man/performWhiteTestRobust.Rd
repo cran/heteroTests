@@ -18,15 +18,18 @@ performWhiteTestRobust(
 \item{model}{A fitted \link[stats:lm]{stats::lm} object representing the mean specification
 to be diagnosed.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} (or object coercible to one) containing the
-variables referenced by \code{model}. It must include the observations used to
-fit \code{model} and will be checked for missing values.
-When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
-terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
-a model that transforms a variable needs \code{data}, as does a
-model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
-argument is a column of the data, which the model frame holds as
-\code{(weights)} or \code{(offset)}.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design, weights and offset are read from the fit itself, so
+a model that transforms its variables, has an \code{offset()} term, or takes
+its \code{weights} or \code{offset} from a column of the data needs no \code{data}, and
+the model frame of \code{model} is accepted as \code{data} (since 0.17.0; before,
+such models needed \code{data}). Data that are given are matched to the
+observations of the fit: rows with row names of their own by name, in any
+order; rows that only number themselves (a tibble, a data.table, a data
+frame whose row names were reset) by the row numbers of the fit, or in the
+order of the fit when they hold one row per observation. The rows the fit
+dropped may be there or not. Data whose rows cannot be shown to hold the
+observations of the fit are refused; see \link{test_results}.}
 
 \item{method}{Character string selecting the auxiliary specification.
 "standard" retains squares and cross-products, while "reduced"
@@ -71,8 +74,16 @@ or with positive weights, a \code{fitWLS()} fit and, since 0.16.0, a rank-defici
 tests on the estimable part of its design: it gives the value of the same model fitted without the
 aliased columns. It refuses a \code{glm} of another family or link, a \code{survey::svyglm()} fit, a
 fit with a zero weight, a coefficient that is not finite for another reason, and \code{data} that
-lack rows or variables of the fit. Which model each test accepts, and why, is set out in
-\code{\link{test_results}}, under \emph{Supported models}.
+lack rows or variables of the fit. An \code{mgcv::gam()} fit with penalised
+smooth terms is tested on its design, the basis of its smooths, as by
+\code{\link[=performWhiteTest]{performWhiteTest()}}, and refused with \code{bootstrap = TRUE} (since 0.17.0;
+before, the bootstrap refused every \code{gam} with an error of its own): each
+replicate fits that design again by least squares, which a penalised fit is
+not. A \code{gam} that is the least-squares fit of its design, as one whose
+smooth terms are all fixed (\code{s(x, fx = TRUE)}) or one without smooth terms,
+is bootstrapped too, as the \code{lm()} of that design (decisions 37 and 38 of
+the design of the model context). Which model each test accepts, and why,
+is set out in \code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)

@@ -29,7 +29,7 @@ context_same <- function(object, expected, info, tolerance = NULL) {
   if (is.numeric(expected)) {
     expect_true(is.numeric(object), info = info)
     if (is.null(tolerance)) {
-      expect_identical(object, expected, info = info)
+      expect_identical_numbers(object, expected, info = info)
     } else {
       expect_equal(object, expected, tolerance = tolerance, info = info)
     }
@@ -52,14 +52,29 @@ context_same <- function(object, expected, info, tolerance = NULL) {
     return(invisible(NULL))
   }
   if (is.null(tolerance)) {
-    expect_identical(unname(object$statistic), unname(expected$statistic), info = info)
-    expect_identical(object$p.value, expected$p.value, info = info)
+    expect_identical_numbers(unname(object$statistic), unname(expected$statistic), info = info)
+    expect_identical_numbers(object$p.value, expected$p.value, info = info)
   } else {
     expect_equal(unname(object$statistic), unname(expected$statistic),
                  tolerance = tolerance, info = info)
     expect_equal(object$p.value, expected$p.value, tolerance = tolerance, info = info)
   }
   expect_identical(unname(object$parameter), unname(expected$parameter), info = info)
+}
+
+# A call on a fit with na.exclude against the same call on its twin, the same
+# fit with na.omit (increment 9, B13): the same refusal, of the same class and
+# with the same message, or the same value, every part of it.
+context_same_as_twin <- function(object, twin, info) {
+  if (inherits(twin, "condition")) {
+    expect_s3_class(object, "error")
+    expect_identical(class(object), class(twin), info = info)
+    expect_identical(conditionMessage(object), conditionMessage(twin), info = info)
+    return(invisible(NULL))
+  }
+  expect_false(inherits(object, "condition"),
+               info = paste(info, if (inherits(object, "condition")) conditionMessage(object)))
+  expect_identical(object, twin, info = info)
 }
 
 context_installed <- function(cell) {
@@ -84,11 +99,26 @@ context_check_matrix <- function(ids, fns = context_runnable(), recipes = contex
       if (!context_installed(cell)) next
       out <- result_of(id)
       info <- paste(fn, id)
+      # A fit with na.exclude gives what its twin, the same fit with na.omit,
+      # gives (increment 9, B13): the same refusal, or the same value, an
+      # output with one value per row padded as naresid() pads it.
+      if (!is.null(cell$twin)) {
+        context_same_as_twin(out, context_twin_value(fn, result_of(cell$twin), cell), info)
+        next
+      }
       if (identical(cell$expect, "value")) {
         context_expect_value(out, info)
         if (!is.null(cell$reference) && context_installed(cells[[cell$reference]])) {
           tolerance <- if (id %in% context_rounded_cells) {
             if (identical(fn, "performFlignerKilleenTest")) context_fligner_tolerance else 1e-10
+          }
+          # The F of the variance form test is a difference of two residual sums
+          # of squares, which amplifies the last bits of the BLAS where it is
+          # small: the noisy BLAS of cran-blas.yml moved it by more than 1e-10 on
+          # the cells with missing rows.
+          if (is.null(tolerance) && startsWith(fn, "performVarianceFormTest") &&
+                startsWith(id, "missing/") && numbers_on_cran()) {
+            tolerance <- blas_tolerance(1e-10)
           }
           context_same(out, result_of(cell$reference), info, tolerance)
         }
@@ -130,7 +160,7 @@ test_that("the context holds the parts of the fit, one per observation", {
   cells <- context_cells()
   ids <- names(cells)[vapply(cells, function(cell) {
     cell$block %in% c("fit", "terms") && identical(cell$form, "data_frame") ||
-      cell$id %in% c("missing/full", "subset/data_frame", "class/rank_deficient", "class/rlm",
+      cell$id %in% c("missing/full", "subset/data_frame", "class/rank_deficient",
                      "ident/repeated_fit")
   }, logical(1))]
   for (id in ids) {
@@ -151,12 +181,12 @@ test_that("the context holds the parts of the fit, one per observation", {
     expect_identical(ctx$rank, m$rank, info = id)
     expect_identical(ctx$aliased, raliased_coefficients(m), info = id)
     expect_length(ctx$rows, n)
+    # A MASS::rlm() fit, whose kind was "rlm", is refused since increment 11
+    # (the test below).
     kind <- if (inherits(m, "glm")) {
       "glm_gaussian"
     } else if (!is.null(attr(m, "variance_function"))) {
       "fitwls"
-    } else if (inherits(m, "rlm")) {
-      "rlm"
     } else {
       "lm"
     }
@@ -247,12 +277,13 @@ test_that("each form of data is aligned as the design says", {
   expect_error(rmodel_context(m_na, reversed, fn = "f"), class = "heteroTests_data_rows_error")
   expect_error(rmodel_context(m_na, reversed, fn = "f"), "`data` has no row names of its own",
                fixed = TRUE)
-  # The guard of the tests that are not migrated yet keeps its rule: it does
-  # not take numbered rows in order, and leaves them to the test.
-  expect_null(rcheck_data_rows(m_na, renumbered))
+  # The rows the alignment picks by the row numbers of the fit, in its order;
+  # until increment 10 the guard of the tests not built on the context
+  # (rcheck_data_rows(), removed) picked them so too, and left numbered rows
+  # in order to the test.
   fit_ids <- names(m_na$residuals)
   expect_length(fit_ids, 117L)
-  expect_identical(rcheck_data_rows(m_na, d_na), match(fit_ids, rownames(d_na)))
+  expect_identical(rmodel_context(m_na, d_na, fn = "f")$rows, match(fit_ids, rownames(d_na)))
   # Data that lack a row of the fit keep their message.
   expect_error(
     rmodel_context(m, d[1:100, ], fn = "f", test_label = "Koenker"),
@@ -335,9 +366,12 @@ test_that("a fit changed after it was fitted is refused", {
                                                        fn = "f")))
   expect_silent(rvalidate_model_context(rmodel_context(lm(y ~ x1 + x2 + x3, data = near),
                                                        fn = "f")))
-  # The M-estimate of MASS::rlm() is not a least-squares fit, and is not checked.
-  expect_silent(rvalidate_model_context(rmodel_context(MASS::rlm(y ~ x1 + x2, data = d),
-                                                       fn = "f")))
+  # The M-estimate of MASS::rlm() is not a least-squares fit: the validator
+  # let it through unchecked, and since increment 11 the context refuses it
+  # before (R6, decision 4).
+  expect_error(rmodel_context(MASS::rlm(y ~ x1 + x2, data = d), fn = "f"),
+               "f() cannot test a MASS::rlm() fit", fixed = TRUE,
+               class = "heteroTests_model_context_error")
 })
 
 test_that("the orthogonality of the residuals allows the rounding of a large response", {
@@ -429,6 +463,267 @@ test_that("the refusals of the context are final in the runners", {
   expect_identical(out$koenker$method, "Koenker studentized Breusch-Pagan test")
 })
 
+test_that("every test, route and runner refuses a MASS::rlm() fit, and the runners keep it final", {
+  # Increment 11 (R6, N10, decision 4). A MASS::rlm() fit is an lm by class
+  # and an M-estimate, whose residuals are not least-squares residuals. Before,
+  # 37 of the 39 tests of helper-test-recipes.R tested it as an lm on this
+  # design (the quantile regression and variance form tests refused it as a
+  # weighted fit, its case weights being all 1), and the studentized
+  # Breusch-Pagan statistic refitted its design by least squares, giving 9.04
+  # where Koenker's test gave 8.74 on the residuals of the M-estimate (N10).
+  # context_data() is contract_data() with the variable of the second formulas.
+  d <- context_data()
+  m <- MASS::rlm(y ~ x1 + x2, data = d)
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  refusal <- paste(
+    "a MASS::rlm() fit: an rlm fit is an M-estimate, whose residuals are not",
+    "least-squares residuals, and the null distributions of the tests assume least squares.",
+    "Test the lm() fit of the same formula instead, lm(y ~ x1 + x2, data = d)."
+  )
+  refused <- function(f, info, fn = NULL, verb = "test") {
+    out <- tryCatch(suppressWarnings(suppressMessages(f())), error = function(e) e)
+    expect_s3_class(out, "heteroTests_model_context_error")
+    expected <- if (is.null(fn)) refusal else sprintf("%s() cannot %s %s", fn, verb, refusal)
+    expect_match(conditionMessage(out), expected, fixed = TRUE, info = info)
+  }
+  # The suggested packages some routes need: without them those routes are
+  # left out, and the rest of the test runs.
+  missing_package <- function(nm) {
+    needs <- c(quantile_regression = "quantreg", performQuantileRegressionTest = "quantreg",
+               spatial_hetero = "spdep", performSpatialHeteroTest = "spdep")
+    nm %in% names(needs) && !requireNamespace(needs[[nm]], quietly = TRUE)
+  }
+  with_listw <- function(data) {
+    set.seed(1)
+    coords <- cbind(stats::runif(nrow(d)), stats::runif(nrow(d)))
+    attr(data, "listw") <- suppressWarnings(
+      spdep::nb2listw(spdep::knn2nb(spdep::knearneigh(coords, k = 4)))
+    )
+    data
+  }
+  # Every exported test, through its recipe, and the calls of a second
+  # formula; each names itself, but for the deprecated name, which calls
+  # performBPTest(), and the recipes the matrix adds.
+  recipes <- context_recipes()
+  recipes <- recipes[setdiff(names(recipes), c("performBoxMTest", "fitWLS",
+                                               "fitWLS(var_formula = ~ z)"))]
+  names_itself <- setdiff(names(contract_recipes), c("performBoxMTest", "performBreuschPaganTest"))
+  for (fn in names(recipes)) {
+    if (missing_package(fn)) next
+    refused(function() recipes[[fn]](m, d), fn, if (fn %in% names_itself) fn)
+  }
+  # performStudentizedBPTest() refuses it before its deprecation warning.
+  expect_error(performStudentizedBPTest(m, d), refusal, fixed = TRUE,
+               class = "heteroTests_model_context_error")
+  # On every form of data, and without `data`: the fit is refused before
+  # `data` is matched.
+  set.seed(3)
+  shuffled <- d[sample(nrow(d)), ]
+  for (data in list(NULL, shuffled, stats::model.frame(m))) {
+    refused(function() performKoenkerTest(m, data), "Koenker, forms", "performKoenkerTest")
+    refused(function() performGQTest(m, data, order_by = "x2"), "GQ, forms", "performGQTest")
+  }
+  # The robust and resampling variants, and bootstrapTestStatistic(), which
+  # refuses it before it calls `test_function`, whatever that is; it refused
+  # it after, as a fit its least-squares refit does not reproduce ("`data`
+  # does not reproduce the fit").
+  refused(function() performWhiteTestRobust(m, d, bootstrap = TRUE, B = 19), "robust White",
+          "performWhiteTestRobust")
+  refused(function() performBPTestRobust(m, d, studentize = FALSE), "robust BP",
+          "performBPTestRobust")
+  refused(function() performBPTestRobust(m, d, bootstrap = TRUE, B = 19), "robust BP bootstrap",
+          "performBPTestRobust")
+  refused(function() {
+    performWildBootstrapTest(m, d, B = 19, distribution = "mammen", progress = FALSE)
+  }, "wild, Mammen", "performWildBootstrapTest")
+  for (statistic in list(performKoenkerTest, function(model, data) list(statistic = 1))) {
+    refused(function() bootstrapTestStatistic(statistic, m, d, B = 19, progress = FALSE),
+            "bootstrapTestStatistic()", "bootstrapTestStatistic")
+  }
+  refused(function() rbootstrap_test_statistic(performKoenkerTest, m, d, B = 19, progress = FALSE),
+          "rbootstrap_test_statistic()", "bootstrapTestStatistic")
+  for (fn in names(context_streaming_recipes())) {
+    refused(function() context_streaming_recipes()[[fn]](m, d), fn)
+  }
+  # fitWLS(), which fits its variance function to the residuals of the fit.
+  for (call in list(function() fitWLS(m), function() fitWLS(m, d, var_formula = ~ z))) {
+    out <- tryCatch(call(), error = function(e) e)
+    expect_s3_class(out, "heteroTests_model_context_error")
+    expect_match(conditionMessage(out), paste(
+      "fitWLS() cannot refit a MASS::rlm() fit: an rlm fit is an M-estimate, whose residuals",
+      "are not least-squares residuals, and fitWLS() fits its variance function to",
+      "least-squares residuals. Pass the lm() fit of the same formula instead,",
+      "fitWLS(lm(y ~ x1 + x2, data = d))."
+    ), fixed = TRUE)
+  }
+  # The registered names, directly, through test_factory, cachedTest() and
+  # the runner, which runs no other test under the name of the one refused
+  # (decision 6): the quantile regression test refused the fit as a weighted
+  # fit, which is not final, and the runner put the rank permutation test
+  # under its name (0.3407).
+  # The names the package registers, not those another test file may have
+  # registered in the same session, as R CMD check runs them all in one.
+  # They are read from .diagnostic_kind, which holds every name the package
+  # registers with what it does, and loses a name registerDiagnostic() gives
+  # another function (as test-diagnostics.R does with custom_test), so that a
+  # name added later is covered. Those of kind "data", Box's M test, test
+  # data rather than a model and never reach the context.
+  registry <- heteroTests:::.diagnostic_registry
+  kinds <- heteroTests:::.diagnostic_kind
+  own <- ls(kinds)
+  expect_true(all(c("white", "koenker", "student_bp", "wild_bootstrap", "box_m") %in% own))
+  for (nm in own[vapply(own, function(k) identical(get(k, envir = kinds), "data"), TRUE)]) {
+    expect_error(suppressWarnings(get(nm, envir = registry)(m, d)), info = nm)
+    expect_error(suppressWarnings(runHeteroTests(m, d, tests = nm, use_cache = FALSE,
+                                                 progress = FALSE)), info = nm)
+  }
+  own <- own[!vapply(own, function(k) identical(get(k, envir = kinds), "data"), TRUE)]
+  for (nm in own) {
+    if (missing_package(nm)) next
+    data <- if (identical(nm, "spatial_hetero")) with_listw(d) else d
+    refused(function() get(nm, envir = registry)(m, data), paste("registry", nm))
+    refused(function() cachedTest(nm, m, data), paste("cachedTest", nm))
+    refused(function() runHeteroTests(m, data, tests = nm, use_cache = FALSE, progress = FALSE),
+            paste("runHeteroTests", nm))
+  }
+  # The entries the package gives test_factory (.ht_factory_tests), not those
+  # another test file registers.
+  for (nm in intersect(names(heteroTests:::.ht_factory_tests), test_factory$get_available())) {
+    if (missing_package(nm)) next
+    data <- if (identical(nm, "spatial_hetero")) with_listw(d) else d
+    refused(function() {
+      if (identical(nm, "szroeter")) {
+        test_factory$run_test(nm, m, data, order_by = "x1")
+      } else {
+        test_factory$run_test(nm, m, data)
+      }
+    }, paste("test_factory", nm))
+  }
+  if (requireNamespace("lmtest", quietly = TRUE)) {
+    refused(function() rvalidate_against_reference("studentized_bp", m, d),
+            "rvalidate_against_reference()", "performStudentizedBPTest")
+  }
+  # The runners: the default battery, the streaming tests asked for, a battery
+  # with a test that has fallbacks, runDiagnostics(), the time-series, panel
+  # and advanced runners, and the functions that run the tests or match
+  # `data` through the context.
+  for (data in list(d, NULL)) {
+    refused(function() runHeteroTests(m, data, use_cache = FALSE, progress = FALSE), "runner")
+    refused(function() runDiagnostics(m, data, use_cache = FALSE, progress = FALSE),
+            "runDiagnostics()")
+  }
+  refused(function() {
+    runHeteroTests(m, d, tests = c("cook_weisberg", "white", "koenker"), use_cache = FALSE,
+                   progress = FALSE)
+  }, "runner, three")
+  refused(function() {
+    runHeteroTests(m, d, chunk_threshold_mb = 0, use_cache = FALSE, progress = FALSE)
+  }, "runner, streaming")
+  refused(function() runHeteroTestsParallel(m, d, tests = c("white", "koenker"), n_cores = 1L),
+          "runHeteroTestsParallel()", "performWhiteTest")
+  refused(function() runTimeSeriesTests(m, lags = 2), "runTimeSeriesTests()",
+          "performArchLMTest")
+  refused(function() runPanelTests(m, d, id = "id", time = "time"), "runPanelTests()")
+  refused(function() runAdvancedDiagnostics(m, d), "runAdvancedDiagnostics()",
+          "performWhiteTestRobust")
+  refused(function() generateHeteroRecommendations(m, d), "generateHeteroRecommendations()",
+          "generateHeteroRecommendations")
+  refused(function() generateHeteroRecommendations(m), "generateHeteroRecommendations(), no data",
+          "generateHeteroRecommendations")
+  results <- list(white = performWhiteTest(lm(y ~ x1 + x2, data = d), d))
+  refused(function() recommendRemediationStrategies(results, m, d),
+          "recommendRemediationStrategies()", "recommendRemediationStrategies", "take")
+  # augment() of a result around such a fit, which the runners no longer
+  # return, given `data`; without `data` it binds the columns of the fit to
+  # its model frame, reading nothing through the context, as before.
+  x <- structure(list(statistic = c(X = 1), p.value = 0.5, method = "fixed"),
+                 class = c("hetero_test", "htest"))
+  attr(x, "model") <- m
+  refused(function() generics::augment(x, data = d), "augment()", "augment", "take")
+  expect_identical(unname(generics::augment(x)$.fitted), unname(stats::fitted(m)))
+  # fitRobust() returns such a fit; the lm() of the same formula is tested.
+  robust <- fitRobust(mpg ~ wt + qsec, mtcars)
+  expect_error(performKoenkerTest(robust, mtcars),
+               "performKoenkerTest() cannot test a MASS::rlm() fit", fixed = TRUE,
+               class = "heteroTests_model_context_error")
+  # Its call names the data the caller gave (from the second review of
+  # increment 11, where it named the variables of fitRobust() and the
+  # message suggested lm(mpg ~ wt + qsec, data = data)): the suggested call
+  # fits the lm of the same formula at top level, and update() refits it.
+  message <- tryCatch(performKoenkerTest(robust, mtcars), error = conditionMessage)
+  expect_true(endsWith(message, paste("Test the lm() fit of the same formula instead,",
+                                      "lm(mpg ~ wt + qsec, data = mtcars).")))
+  suggested <- sub("\\.$", "", sub(".*instead, ", "", message))
+  expect_equal(coef(eval(parse(text = suggested), globalenv())),
+               coef(lm(mpg ~ wt + qsec, data = mtcars)))
+  expect_identical(deparse1(robust$call),
+                   "MASS::rlm(formula = mpg ~ wt + qsec, data = mtcars)")
+  # update() calls MASS::rlm(), whose fit records its own call, without MASS
+  # attached.
+  expect_equal(coef(update(robust, . ~ . - qsec)), coef(MASS::rlm(mpg ~ wt, data = mtcars)))
+  bisquare <- fitRobust(mpg ~ wt + qsec, mtcars, psi = MASS::psi.bisquare, maxit = 50)
+  expect_identical(deparse1(bisquare$call), paste(
+    "MASS::rlm(formula = mpg ~ wt + qsec, data = mtcars, psi = MASS::psi.bisquare,",
+    "maxit = 50)"
+  ))
+  expect_equal(coef(update(bisquare)), coef(bisquare))
+  # Of an lm, the data, subset and na.action of its call.
+  from_lm <- fitRobust(lm(mpg ~ wt + qsec, data = mtcars, subset = cyl > 4))
+  expect_identical(deparse1(from_lm$call),
+                   "MASS::rlm(formula = mpg ~ wt + qsec, data = mtcars, subset = cyl > 4)")
+  expect_equal(coef(update(from_lm)), coef(from_lm))
+  message <- tryCatch(performKoenkerTest(from_lm, mtcars), error = conditionMessage)
+  expect_true(endsWith(message, "instead, lm(mpg ~ wt + qsec, data = mtcars, subset = cyl > 4)."))
+  expect_s3_class(performKoenkerTest(lm(mpg ~ wt + qsec, mtcars), mtcars), "htest")
+  # autoCompareRemediations() refuses it too (from the review of increment
+  # 11): it compared it as its "OLS" row with fitWLS() of it and with itself,
+  # and recommended WLS (AIC 396.5).
+  refused(function() autoCompareRemediations(m, d), "autoCompareRemediations()",
+          "autoCompareRemediations", "take")
+  # A grouped run is refused before any group is refitted, with the class
+  # (from the review of increment 11), where each group was refitted by the
+  # call of the fit and its refusals recorded as failures of the group, or,
+  # with MASS attached, the rlm() of each group tested (White 5.65, p 0.342,
+  # in group a).
+  skip_if_not_installed("dplyr")
+  grouped <- dplyr::group_by(dplyr::as_tibble(d), group)
+  refused(function() runHeteroTests(m, grouped, use_cache = FALSE, progress = FALSE), "grouped",
+          "runHeteroTests")
+  refused(function() {
+    runHeteroTests(m, grouped, tests = "quantile_regression", use_cache = FALSE, progress = FALSE)
+  }, "grouped, quantile", "runHeteroTests")
+  # A tibble, in the order of the fit, and a fit with model = FALSE whose data
+  # are gone, given them.
+  refused(function() performKoenkerTest(m, dplyr::as_tibble(d)), "tibble", "performKoenkerTest")
+  env <- new.env()
+  assign("gone", d, envir = env)
+  m_false <- eval(quote(MASS::rlm(y ~ x1 + x2, data = gone, model = FALSE)), env)
+  rm("gone", envir = env)
+  out <- tryCatch(performKoenkerTest(m_false, d), error = function(e) e)
+  expect_s3_class(out, "heteroTests_model_context_error")
+  expect_match(conditionMessage(out), "lm(y ~ x1 + x2, data = gone).", fixed = TRUE)
+  # The lm() call it suggests is that of the fit, with the arguments lm()
+  # takes and without those of the M-estimation (from the review of
+  # increment 11); a fit of the matrix interface, which has no formula, gets
+  # the lm() fit of the same model.
+  d$w <- 1 / d$x1^2
+  weighted <- MASS::rlm(y ~ x1 + x2, data = d, weights = w, subset = x1 > 0.6,
+                        psi = MASS::psi.bisquare, maxit = 50)
+  out <- tryCatch(performKoenkerTest(weighted, d), error = function(e) e)
+  expect_s3_class(out, "heteroTests_model_context_error")
+  expect_match(conditionMessage(out),
+               "instead, lm(y ~ x1 + x2, data = d, weights = w, subset = x1 > 0.6).", fixed = TRUE)
+  expect_false(grepl("psi|maxit", conditionMessage(out)))
+  matrix_fit <- MASS::rlm(cbind(1, d$x1, d$x2), d$y)
+  out <- tryCatch(performKoenkerTest(matrix_fit), error = function(e) e)
+  expect_s3_class(out, "heteroTests_model_context_error")
+  expect_match(conditionMessage(out), "least squares. Test the lm() fit of the same model instead.",
+               fixed = TRUE)
+  out <- tryCatch(fitWLS(matrix_fit), error = function(e) e)
+  expect_match(conditionMessage(out), "Pass the lm() fit of the same model instead.", fixed = TRUE)
+})
+
 test_that("a fit with model = FALSE whose data are gone is tested on data that reproduce it", {
   d <- context_data()
   env <- new.env()
@@ -466,41 +761,258 @@ test_that("a fit with model = FALSE whose data are gone is tested on data that r
   }
 })
 
-test_that("a Gaussian gam is tested as before, and without smooths it is the lm", {
+test_that("a gam that is the least-squares fit of its basis is taken by every test (decision 38)", {
+  # Increment 11, decision 38: a Gaussian gam without smooth terms, or whose
+  # smooths are fixed, s(x, fx = TRUE), is the least-squares fit of its stored
+  # design, the basis, and every test gives it the value of the lm() of that
+  # basis (context_basis_lm()), to rounding: the tests of increment 2 and the
+  # White bootstrap, which refused a fixed smooth as a gam with smooth terms;
+  # the wild bootstrap, which stopped on every gam reading its leverages with
+  # hatvalues(), and bootstrapTestStatistic() with the robust bootstraps, which
+  # refused every gam. Without smooth terms the basis is the design of the lm
+  # of the same formula.
   skip_if_not_installed("mgcv")
   d <- context_data()
   plain <- mgcv::gam(y ~ x1 + x2, data = d)
+  fixed <- mgcv::gam(y ~ s(x1, fx = TRUE) + x2, data = d)
+  recipes <- context_recipes()
+  extra <- list(
+    `bootstrapTestStatistic(null)` = function(m, data) {
+      bootstrapTestStatistic(performKoenkerTest, m, data, B = 19, progress = FALSE)
+    },
+    `performWhiteTestRobust(bootstrap = TRUE)` = function(m, data) {
+      performWhiteTestRobust(m, data, bootstrap = TRUE, B = 19)
+    },
+    `performBPTestRobust(studentize = FALSE, bootstrap = TRUE)` = function(m, data) {
+      performBPTestRobust(m, data, studentize = FALSE, bootstrap = TRUE, B = 19)
+    }
+  )
+  numbers <- function(v) {
+    if (is.list(v) && !is.null(v$original_statistic)) {
+      return(c(v$original_statistic, v$p_value, v$replicates))
+    }
+    c(unname(v$statistic), unname(v$parameter), v$p.value)
+  }
+  basis_tolerance <- if (numbers_on_cran()) 1e-6 else 1e-8
+  for (g in list(plain = plain, fixed = fixed)) {
+    expect_true(rgam_least_squares(rmodel_context(g, fn = "f")))
+    oracle <- context_basis_lm(g, d)
+    bare <- function(x) matrix(as.vector(x), nrow(x))
+    expect_identical_numbers(bare(stats::model.matrix(oracle$m)), bare(stats::model.matrix(g)))
+    for (fn in c(context_runnable(), names(extra))) {
+      recipe <- if (fn %in% names(extra)) extra[[fn]] else recipes[[fn]]
+      set.seed(7)
+      out <- suppressWarnings(tryCatch(recipe(g, d), error = function(e) e))
+      set.seed(7)
+      expected <- suppressWarnings(tryCatch(recipe(oracle$m, oracle$data), error = function(e) e))
+      info <- paste(fn, deparse(stats::formula(g)))
+      if (inherits(expected, "error")) {
+        expect_s3_class(out, "error")
+        next
+      }
+      expect_false(inherits(out, "error"), info = paste(info, conditionMessage(out)))
+      if (inherits(out, "error") || !is.list(out) || is.null(out$statistic) &&
+            is.null(out$original_statistic)) {
+        next
+      }
+      # The gam and the lm of its basis are two fits of the same design: their
+      # residuals agree to about 1e-10 relative, which White's 60 nearly
+      # collinear auxiliary terms of the fixed smooth and the variance form
+      # test amplify. Under the noisy BLAS of cran-blas.yml they differed by
+      # up to 1.8e-8 relative, so on CRAN they are compared to 1e-6.
+      expect_equal(numbers(out), numbers(expected), tolerance = basis_tolerance, info = info)
+    }
+    # Its data are matched by the row names of its model frame, by the
+    # bootstraps too, which numbered them by position before.
+    set.seed(7)
+    shuffled <- d[sample(nrow(d)), ]
+    set.seed(7)
+    a <- bootstrapTestStatistic(performKoenkerTest, g, d, B = 19, progress = FALSE)
+    set.seed(7)
+    b <- bootstrapTestStatistic(performKoenkerTest, g, shuffled, B = 19, progress = FALSE)
+    expect_identical_numbers(a$original_statistic, b$original_statistic)
+  }
+  # The plain gam is still the lm of its formula.
+  context_same(context_run("performWildBootstrapTest",
+                           list(build = function() list(m = plain, data = d))),
+               context_run("performWildBootstrapTest",
+                           list(build = function() list(m = lm(y ~ x1 + x2, d), data = d))),
+               "wild bootstrap, gam", tolerance = 1e-10)
+  expect_identical(rmodel_context(plain, fn = "f")$kind, "gam")
+  expect_identical(rmodel_context(plain, fn = "f")$obs_id, rownames(stats::model.frame(plain)))
+  # The check is the least-squares refit of the basis, to 1e-8 of its largest
+  # residual plus 1e3 epsilon of the largest response and offset: on these
+  # data a smoothing parameter of 0 leaves the residuals within 0.005 of that
+  # line, one of 1e-10 within 0.22 of it, and one of 1e-9 2.2 times beyond it.
+  for (sp in c(0, 1e-10, 1e-9, 1e-8)) {
+    g <- mgcv::gam(y ~ s(x1) + x2, data = d, sp = sp)
+    expect_identical(rgam_least_squares(rmodel_context(g, fn = "f")), sp <= 1e-10, info = sp)
+  }
+})
+
+test_that("the least-squares check of a gam does not depend on how the model is written", {
+  # From the second review of increment 11: the line was drawn on the spread
+  # of the response, which an offset or a trend the design fits makes as
+  # large as they are, so that a penalised gam with an offset of 1e7 passed,
+  # and the same model written as (y - offset) ~ ... did not; and a fixed
+  # smooth with a mean of 1e8 failed through rounding, and was refused as a
+  # penalised fit. The line is drawn on the residuals of the refit now, with
+  # the rounding of the response and the offset.
+  skip_if_not_installed("mgcv")
+  set.seed(20261015)
+  n <- 120
+  d <- data.frame(x1 = runif(n, 0.5, 2), x2 = rnorm(n))
+  d$y0 <- 1 + sin(3 * d$x1) - d$x2 + rnorm(n, sd = 0.3 * d$x1)
+  d$big <- 1e7 * rnorm(n)
+  d$y <- d$y0 + d$big
+  d$trend <- d$y0 + 3e7 * d$x2
+  d$high <- d$y0 + 1e8
+  least_squares <- function(g) rgam_least_squares(rmodel_context(g, fn = "f"))
+  penalised <- "performRESETTest() cannot test a penalised mgcv::gam() fit (s(x1))"
+  offset <- mgcv::gam(y ~ s(x1) + x2 + offset(big), data = d)
+  without <- mgcv::gam(y0 ~ s(x1) + x2, data = d)
+  trend <- mgcv::gam(trend ~ s(x1) + x2, data = d)
+  for (g in list(offset, without, trend)) {
+    expect_false(least_squares(g))
+    expect_error(performRESETTest(g, d), penalised, fixed = TRUE,
+                 class = "heteroTests_model_context_error")
+  }
+  # A fixed smooth with a mean of 1e8 is the least-squares fit of its basis,
+  # and is tested as the lm() of it.
+  high <- mgcv::gam(high ~ s(x1, fx = TRUE) + x2, data = d)
+  expect_true(least_squares(high))
+  oracle <- context_basis_lm(high, d)
+  # The studentized statistic refits the basis: to the rounding of a mean of
+  # 1e8.
+  expect_equal(unname(performBPTestRobust(high, d)$statistic),
+               unname(performBPTestRobust(oracle$m, oracle$data)$statistic), tolerance = 1e-5)
+  # A gam without a penalised term that fails the check, here because its
+  # residuals were changed after the fit, is not called penalised.
+  fixed <- mgcv::gam(y0 ~ s(x1, fx = TRUE) + x2, data = d)
+  expect_true(least_squares(fixed))
+  fixed$residuals <- fixed$residuals + 1e-6
+  for (call in list(function() performRESETTest(fixed, d), function() fitWLS(fixed, d))) {
+    out <- tryCatch(call(), error = function(e) e)
+    expect_s3_class(out, "heteroTests_model_context_error")
+    expect_match(conditionMessage(out),
+                 "cannot (test|refit) this mgcv::gam\\(\\) fit \\(s\\(x1\\)\\)")
+    expect_match(conditionMessage(out), "although none of its terms is penalised", fixed = TRUE)
+    expect_no_match(conditionMessage(out), "penalised mgcv::gam", fixed = TRUE)
+  }
+  # Nor is a gam without a penalised term on an ill-conditioned design, whose
+  # fit by mgcv is not the least-squares fit of that design (from the third
+  # review of increment 11): with a regressor 1e4 from zero, mgcv's residual
+  # sum of squares is 169.1 against 41.9 for least squares, and RESET gave
+  # 476.2 (p = 2.3e-56) where the lm() of the same formula gives 0.31. The
+  # refusal says so, and that refitting the gam would give the same fit.
+  # Whether mgcv's fit of such a design falls short of least squares is
+  # decided by its numerics, which another BLAS may change: off CRAN only.
+  skip_on_cran()
+  d$x3 <- 1e4 + d$x2
+  advice <- paste("mgcv's fit is not that fit on an ill-conditioned design, such as one with a",
+                  "regressor far from zero: centre that regressor, or fit the model with lm().")
+  for (g in list(mgcv::gam(y0 ~ x1 + x3, data = d),
+                 mgcv::gam(y0 ~ s(x1, fx = TRUE) + x3, data = d))) {
+    expect_false(least_squares(g))
+    for (call in list(function() performRESETTest(g, d),
+                      function() performGQTest(g, d, order_by = "x1"),
+                      function() performBPTestRobust(g, d))) {
+      out <- tryCatch(call(), error = function(e) e)
+      expect_s3_class(out, "heteroTests_model_context_error")
+      expect_match(conditionMessage(out), "cannot test this mgcv::gam() fit", fixed = TRUE)
+      expect_match(conditionMessage(out), advice, fixed = TRUE)
+      expect_no_match(conditionMessage(out), "penalised mgcv::gam", fixed = TRUE)
+    }
+  }
+  centred <- mgcv::gam(y0 ~ x1 + x2, data = d)
+  expect_true(least_squares(centred))
+})
+
+test_that("a penalised gam is refused by the tests that fit it again (decision 37)", {
+  # Increment 11, decision 37: a penalised gam is tested on its stored design,
+  # the basis of its smooths, by every test that reads only its residuals, its
+  # fitted values, columns of `data` or its basis as the regressors of an
+  # auxiliary regression; and refused, with the class of the context, by the
+  # tests that fit it again by least squares and those whose null
+  # distribution is that of the least-squares residuals of the design.
+  skip_if_not_installed("mgcv")
+  d <- context_data()
   smooth <- mgcv::gam(y ~ s(x1) + x2, data = d)
+  refusal <- "%s() cannot %s a penalised mgcv::gam() fit (s(x1)): its residuals are not those of"
+  refused <- function(f, fn, verb = "test") {
+    out <- tryCatch(suppressWarnings(f()), error = function(e) e)
+    expect_s3_class(out, "heteroTests_model_context_error")
+    expect_match(conditionMessage(out), sprintf(refusal, fn, verb), fixed = TRUE, info = fn)
+  }
+  recipes <- context_recipes()
   for (fn in context_runnable()) {
-    # Before 0.16.0 Fligner-Killeen's ranks tied at a group median on one fit
-    # and not, by rounding, on the other (N15, context_fligner_tolerance).
-    fligner <- identical(fn, "performFlignerKilleenTest")
-    tolerance <- if (fligner) context_fligner_tolerance else 1e-10
     for (data in list(d, NULL)) {
-      # Hartley's test and the group tests group by a variable of `data` that
-      # the model frame does not hold, and so do the panel tests: without
-      # `data` they are refused (M1), as the matrix checks; the scatter
-      # diagnostic and runPanelTests() need `data`.
       if (is.null(data) && fn %in% context_data_readers()) next
-      context_same(context_run(fn, list(build = function() list(m = plain, data = data))),
-                   context_run(fn, list(build = function() list(m = lm(y ~ x1 + x2, d), data = d))),
-                   paste(fn, "gam"), tolerance = tolerance)
-      out <- context_run(fn, list(build = function() list(m = smooth, data = data)))
-      if (fn %in% context_increment2) {
-        # A smooth term is usually penalised, and a penalised fit is not the
-        # least-squares fit of its design: the tests of increment 2 refuse it,
-        # until increment 11 settles which tests take it.
-        expect_s3_class(out, "heteroTests_model_context_error")
-        refusal <- "%s() cannot test an mgcv::gam() fit with smooth terms (s(x1))"
-        expect_match(conditionMessage(out), sprintf(refusal, fn), fixed = TRUE, info = fn)
+      if (fn %in% context_refuse_penalised) {
+        refused(function() recipes[[fn]](smooth, data), fn)
       } else {
-        # Those of increments 1, 3, 4 and 5 test it as before 0.16.0.
-        context_expect_value(out, fn)
+        built <- list(build = function() list(m = smooth, data = data))
+        context_expect_value(context_run(fn, built), fn)
       }
     }
   }
-  expect_identical(rmodel_context(plain, fn = "f")$kind, "gam")
-  expect_identical(rmodel_context(plain, fn = "f")$obs_id, rownames(stats::model.frame(plain)))
+  # The streaming tests read the basis, chunk by chunk, and give the values of
+  # the exact tests: the Breusch-Pagan test 23.995 and Koenker's 18.313 on 10,
+  # White's 46.05 on 60, where on the variables of the formula they gave
+  # 11.185 and 8.537 on 2 and 10.61 on 5.
+  exact <- list(
+    performWhiteTestStreaming = performWhiteTest(smooth, d),
+    performBPTestStreaming = performBPTest(smooth, d),
+    performKoenkerTestStreaming = performKoenkerTest(smooth, d)
+  )
+  # The 60 nearly collinear auxiliary terms of White's test on the basis
+  # amplify the last bits of the BLAS (1.2e-9 relative between two calls
+  # under the noisy BLAS of cran-blas.yml): on CRAN the streaming and the
+  # exact tests are compared to 1e-6.
+  streaming_tolerance <- if (numbers_on_cran()) 1e-6 else 1e-8
+  for (fn in names(exact)) {
+    for (chunk in c(7, 40, 10000)) {
+      streamed <- get(fn)(smooth, d, chunk_size = chunk, progress = FALSE)
+      expect_equal(unname(streamed$statistic), unname(exact[[fn]]$statistic),
+                   tolerance = streaming_tolerance, info = paste(fn, chunk))
+      expect_identical(unname(streamed$parameter), unname(exact[[fn]]$parameter))
+    }
+  }
+  expect_equal(unname(exact$performBPTestStreaming$statistic), 23.9947, tolerance = 1e-5)
+  expect_equal(unname(exact$performKoenkerTestStreaming$statistic), 18.3128, tolerance = 1e-5)
+  expect_equal(unname(exact$performWhiteTestStreaming$parameter), 60)
+  run <- function(...) {
+    suppressWarnings(runHeteroTests(smooth, d, use_cache = FALSE, progress = FALSE, ...))
+  }
+  tests <- c("white", "breusch_pagan", "koenker")
+  whole <- run(tests = tests)
+  chunked <- run(tests = tests, chunk_threshold_mb = 0, chunk_size = 7)
+  for (nm in tests) {
+    expect_equal(unname(chunked[[nm]]$statistic), unname(whole[[nm]]$statistic),
+                 tolerance = streaming_tolerance, info = nm)
+  }
+  # The bootstraps refuse it with the class of the context, under their own
+  # names, where bootstrapTestStatistic() refused every gam without it and the
+  # wild bootstrap stopped on its leverages; the runner keeps the refusal of
+  # the wild bootstrap final, where it put White's test under its name.
+  refused(function() {
+    bootstrapTestStatistic(performKoenkerTest, smooth, d, B = 19, progress = FALSE)
+  }, "bootstrapTestStatistic")
+  refused(function() performWhiteTestRobust(smooth, d, bootstrap = TRUE, B = 19),
+          "performWhiteTestRobust")
+  refused(function() performBPTestRobust(smooth, d, studentize = FALSE, bootstrap = TRUE, B = 19),
+          "performBPTestRobust")
+  refused(function() fitWLS(smooth, d), "fitWLS", "refit")
+  refused(function() get("szroeter", envir = heteroTests:::.diagnostic_registry)(smooth, d),
+          "performSzroeterTest")
+  refused(function() run(tests = "wild_bootstrap"), "performWildBootstrapTest")
+  refused(function() run(tests = "szroeter"), "performSzroeterTest")
+  # runDiagnostics() runs RESET, whose refusal is final: it refuses the fit as
+  # a whole.
+  refused(function() {
+    suppressWarnings(runDiagnostics(smooth, d, use_cache = FALSE, progress = FALSE))
+  }, "performRESETTest")
+  expect_false(rgam_least_squares(rmodel_context(smooth, fn = "f")))
 })
 
 test_that("data in the order of the fit must tell apart the rows a test reads beyond the frame", {
@@ -535,9 +1047,9 @@ test_that("data in the order of the fit must tell apart the rows a test reads be
   }
   # A column of the model frame, or the default, is read from rows that the
   # comparison confirmed, ties or not.
-  expect_identical(run(numbered, "x")$statistic, run(named, "x")$statistic)
-  expect_identical(run(numbered, NULL)$statistic, run(named, NULL)$statistic)
-  expect_identical(run(named, "z")$statistic, expected$statistic)
+  expect_identical_numbers(run(numbered, "x")$statistic, run(named, "x")$statistic)
+  expect_identical_numbers(run(numbered, NULL)$statistic, run(named, NULL)$statistic)
+  expect_identical_numbers(run(named, "z")$statistic, expected$statistic)
 })
 
 test_that("the tests of increments 3 and 4 read their variable at rows told apart", {
@@ -604,9 +1116,11 @@ test_that("the tests of increments 3 and 4 read their variable at rows told apar
     # confirmed, ties or not.
     if (beyond[[fn]] == "g") {
       grouped <- lm(y ~ x + g, data = named)
-      expect_identical(run(grouped, numbered, "g")$statistic, run(grouped, named, "g")$statistic)
+      expect_identical_numbers(run(grouped, numbered, "g")$statistic,
+                               run(grouped, named, "g")$statistic)
     } else {
-      expect_identical(run(m, numbered, "x")$statistic, run(m, named, "x")$statistic, info = fn)
+      expect_identical_numbers(run(m, numbered, "x")$statistic, run(m, named, "x")$statistic,
+                               info = fn)
     }
   }
   # The spatial test reads no column of `data`: its weights list the
@@ -650,11 +1164,29 @@ test_that("a gam is matched to `data` by the row names of its model frame", {
   )
   fns <- c(context_increment3, context_increment4, context_increment5, context_streaming)
   for (m in fits) {
+    penalised <- !rgam_least_squares(rmodel_context(m, fn = "f"))
     for (fn in context_runnable(fns)) {
       expected <- context_run(fn, list(build = function() list(m = m, data = d)))
+      got <- context_run(fn, list(build = function() list(m = m, data = shuffled)))
+      # Since increment 11 Szroeter's and Harrison-McCabe's tests refuse the
+      # penalised gam, whose residuals are not those their null distributions
+      # are derived for (decision 37), on any data.
+      if (penalised && fn %in% context_refuse_penalised) {
+        expect_s3_class(expected, "heteroTests_model_context_error")
+        expect_identical(conditionMessage(got), conditionMessage(expected), info = fn)
+        next
+      }
       context_expect_value(expected, fn)
-      context_same(context_run(fn, list(build = function() list(m = m, data = shuffled))),
-                   expected, paste(fn, deparse(stats::formula(m))))
+      # Since increment 11 the streaming tests read the basis of the smooth,
+      # whose 60 auxiliary terms of White's test are nearly collinear: under the
+      # noisy BLAS of cran-blas.yml two calls on the same fit differed by up to
+      # 1.2e-9 relative there, on three seeds, so on CRAN they are compared to
+      # 1e-7, and bit for bit off CRAN, as every other call.
+      tolerance <- if (fn %in% context_streaming && length(m$smooth) > 0L &&
+                         numbers_on_cran()) {
+        1e-7
+      }
+      context_same(got, expected, paste(fn, deparse(stats::formula(m))), tolerance)
     }
   }
 })
@@ -715,11 +1247,51 @@ test_that("a term computed from its rows keeps the values of the fit in every ch
                      unname(suppressWarnings(exact[[fn]](m, data))$statistic),
                      tolerance = 1e-8, info = info)
       }
-      # White's streaming test stops on the collinear squares of the dummies
-      # (N3, a pull request of its own), where it stopped on the new levels.
-      expect_error(suppressWarnings(performWhiteTestStreaming(m, data, chunk_size = chunk,
-                                                              progress = FALSE)),
-                   "Auxiliary regression became rank deficient", fixed = TRUE)
+      # White's streaming test drops the collinear squares of the dummies,
+      # as performWhiteTest() does, since the pull request of N3 (0.17.0);
+      # in 0.16.0 it stopped on them, "Auxiliary regression became rank
+      # deficient", and before, where cut() computed other breaks, on the
+      # new levels.
+      white <- function(model, data) {
+        suppressWarnings(performWhiteTestStreaming(model, data, chunk_size = chunk,
+                                                   progress = FALSE))
+      }
+      out <- white(m, data)
+      info <- paste("performWhiteTestStreaming", case, chunk)
+      context_same(out, white(reference$m, reference$data), info, tolerance = 1e-10)
+      context_same(out, suppressWarnings(performWhiteTest(m, data)), info, tolerance = 1e-8)
+    }
+  }
+})
+
+test_that("White's streaming test drops the collinear terms of the cells of the matrix (N3)", {
+  # The cells whose terms make White's auxiliary terms collinear, a factor, a
+  # factor with log() terms, poly(), I(x1^2) beside x1, I(x1 > median(x1)) and
+  # cut(), on an unweighted and a weighted fit, and the model of the group of
+  # increment 4 and the median of a fit that dropped rows, on every form of
+  # data each accepts: in chunks of 7 and of 10,000 it gives the value of
+  # performWhiteTest() and its degrees of freedom, where up to 0.16.0 it
+  # stopped on those terms. That it gives the value of the reference of each
+  # cell is in the matrix (context_cell_for_streaming()).
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  cells <- context_cells()
+  ids <- names(cells)[vapply(cells, function(cell) {
+    identical(cell$expect, "value") && isTRUE(cell$terms %in% context_white_streaming_collinear) &&
+      context_installed(cell)
+  }, logical(1))]
+  expect_true(all(c("terms/ols/none/factor/data_frame", "terms/wls/none/factor/null",
+                    "terms/ols/none/log_factor/shuffled", "terms/ols/term/factor/model_frame",
+                    "group/na_factor", "missing/median_full") %in% ids))
+  for (id in ids) {
+    built <- suppressWarnings(suppressMessages(cells[[id]]$build()))
+    exact <- suppressWarnings(suppressMessages(performWhiteTest(built$m, built$data)))
+    for (chunk in c(7, 10000)) {
+      info <- paste(id, chunk)
+      out <- suppressWarnings(suppressMessages(
+        performWhiteTestStreaming(built$m, built$data, chunk_size = chunk, progress = FALSE)
+      ))
+      context_same(out, exact, info, tolerance = 1e-8)
     }
   }
 })
@@ -808,32 +1380,34 @@ test_that("the runner keeps the refusals of the streaming tests final", {
     context_same(streamed[[nm]], expected[[nm]], nm)
   }
   # On a term computed from its rows, the runner's streaming tests give the
-  # values of the fit in every chunk (B6), and White's falls back on White's
-  # test without cross products, as before.
+  # values of the fit in every chunk (B6). White's streams too since the pull
+  # request of N3 (0.17.0), dropping the collinear square of the indicator;
+  # in 0.16.0 it stopped on it, and the runner fell back on White's test
+  # without cross products.
   m <- context_model(d, "ols", "none", "median")
   chunked <- run(m, d)
-  for (nm in c("breusch_pagan", "koenker")) {
+  for (nm in c("white", "breusch_pagan", "koenker")) {
     expect_true(attr(chunked[[nm]], "extras")$streaming, info = nm)
     expect_null(attr(chunked[[nm]], "extras")$status)
     context_same(chunked[[nm]], run(m, d, chunk_size = 10000)[[nm]], nm, tolerance = 1e-10)
   }
-  expect_identical(attr(chunked$white, "extras")$status, "fallback")
 })
 
-test_that("a gam with smooth terms is streamed as before, on the variables of its formula", {
+test_that("a gam with smooth terms is streamed on its basis, as the exact tests read it", {
   # Its stored design is the basis of its smooths, on which the exact tests
-  # test it (decision 23). The streaming tests built the design of each chunk
-  # from its terms, those of the variables of its formula, and keep that
-  # design, now from its model frame, until the last step of the model
-  # context settles which tests take such a fit: Breusch-Pagan's and Koenker's
-  # statistics of its residuals on x1 and x2, written out here.
+  # test it. The streaming tests built the design of each chunk from its
+  # terms, those of the variables of its formula, and kept that design until
+  # the last step of the model context (decision 23); since, they read the
+  # basis chunk by chunk (decision 37): Breusch-Pagan's and Koenker's
+  # statistics of its residuals on the basis, written out here, where on x1
+  # and x2 they gave 11.185 and 8.537 on 2.
   skip_if_not_installed("mgcv")
   old <- ht_set_log_level("SILENT")
   on.exit(ht_set_log_level(old), add = TRUE)
   d <- context_data()
   smooth <- mgcv::gam(y ~ s(x1) + x2, data = d)
   e2 <- unname(stats::residuals(smooth))^2
-  X <- cbind(d$x1, d$x2)
+  X <- stats::model.matrix(smooth)[, -1]
   g <- e2 / mean(e2) - 1
   bp <- 0.5 * sum(stats::fitted(stats::lm(g ~ X))^2)
   koenker <- length(e2) * summary(stats::lm(e2 ~ X))$r.squared
@@ -842,8 +1416,8 @@ test_that("a gam with smooth terms is streamed as before, on the variables of it
     out_k <- performKoenkerTestStreaming(smooth, NULL, chunk_size = chunk, progress = FALSE)
     expect_equal(unname(out_bp$statistic), bp, tolerance = 1e-8)
     expect_equal(unname(out_k$statistic), koenker, tolerance = 1e-8)
-    expect_equal(unname(out_bp$parameter), 2)
-    expect_equal(unname(out_k$parameter), 2)
+    expect_equal(unname(out_bp$parameter), 10)
+    expect_equal(unname(out_k$parameter), 10)
   }
 })
 
@@ -949,7 +1523,7 @@ test_that("the registered Szroeter test orders by the fitted values of the conte
     glm_offset = glm(y ~ x1 + x2, data = d, offset = o),
     rank_deficient = lm(y ~ x1 + x2 + I(2 * x2), data = d),
     factor = lm(y ~ x1 + group, data = d),
-    fitwls = fitWLS(lm(y ~ x1 + x2, data = d)), rlm = MASS::rlm(y ~ x1 + x2, data = d),
+    fitwls = fitWLS(lm(y ~ x1 + x2, data = d)),
     na_omit = lm(y ~ x1 + x2, data = d_na)
   )
   if (requireNamespace("mgcv", quietly = TRUE)) {
@@ -964,7 +1538,7 @@ test_that("the registered Szroeter test orders by the fitted values of the conte
   for (nm in names(fits)) {
     ctx <- rmodel_context(fits[[nm]], fn = "f")
     predicted <- unname(as.vector(stats::predict(fits[[nm]], type = "response")))
-    expect_identical(rcontext_mean(ctx), predicted, info = nm)
+    expect_identical_numbers(rcontext_mean(ctx), predicted, info = nm)
     expect_equal(rcontext_mean(ctx), unname(as.vector(stats::fitted(fits[[nm]]))),
                  tolerance = 1e-12, info = nm)
   }
@@ -975,9 +1549,9 @@ test_that("the registered Szroeter test orders by the fitted values of the conte
   if (requireNamespace("mgcv", quietly = TRUE)) {
     argument <- mgcv::gam(y ~ x1 + x2, data = d, offset = o)
     ctx <- rmodel_context(argument, fn = "f")
-    expect_identical(rcontext_mean(ctx), unname(as.vector(stats::fitted(argument))))
+    expect_identical_numbers(rcontext_mean(ctx), unname(as.vector(stats::fitted(argument))))
     term_ctx <- rmodel_context(fits$gam_offset_term, fn = "f")
-    expect_identical(rcontext_mean(ctx), rcontext_mean(term_ctx))
+    expect_identical_numbers(rcontext_mean(ctx), rcontext_mean(term_ctx))
     expect_false(isTRUE(all.equal(rcontext_mean(ctx),
                                   unname(as.vector(stats::predict(argument, type = "response"))))))
     mt <- mtcars
@@ -1000,22 +1574,22 @@ test_that("the registered Szroeter test orders by the fitted values of the conte
   expected <- szroeter(m, d_na)
   fit_rows <- d_na[names(m$residuals), ]
   fit_rows$fv <- rcontext_mean(rmodel_context(m, fn = "f"))
-  expect_identical(unname(expected$statistic),
-                   unname(performSzroeterTest(m, fit_rows, order_by = "fv")$statistic))
+  expect_identical_numbers(unname(expected$statistic),
+                           unname(performSzroeterTest(m, fit_rows, order_by = "fv")$statistic))
   # Without `data` it reads the model frame, where it stopped with "Missing
   # rows"; the complete rows numbered again are taken in the order of the
   # fit, where they were matched by row name and refused.
-  expect_identical(szroeter(m, NULL)$statistic, expected$statistic)
+  expect_identical_numbers(szroeter(m, NULL)$statistic, expected$statistic)
   complete <- d_na[stats::complete.cases(d_na[, c("y", "x1", "x2")]), ]
   rownames(complete) <- NULL
-  expect_identical(szroeter(m, complete)$statistic, expected$statistic)
+  expect_identical_numbers(szroeter(m, complete)$statistic, expected$statistic)
   # A fit with model = FALSE whose data are gone is tested on data that give
   # its response and fitted values; predict() could not rebuild its frame.
   env <- new.env()
   assign("gone", d, envir = env)
   m_false <- eval(quote(lm(y ~ x1 + x2, data = gone, model = FALSE)), env)
   rm("gone", envir = env)
-  expect_identical(szroeter(m_false, d)$statistic, szroeter(fits$ols, d)$statistic)
+  expect_identical_numbers(szroeter(m_false, d)$statistic, szroeter(fits$ols, d)$statistic)
   # Data the guard refuses are refused, with its class.
   arranged <- d[order(d$x1), ]
   rownames(arranged) <- NULL
@@ -1220,24 +1794,15 @@ test_that("a term is the column it computes, taken from the fit", {
         # runPanelTests() need `data`.
         readers <- c(names(context_reads), context_increment5)
         forms <- if (fn %in% readers) "data_frame" else c("data_frame", "null")
-        # White's streaming test stops on the collinear squares of these terms,
-        # and of their columns computed beforehand (N3).
-        collinear <- identical(fn, "performWhiteTestStreaming") &&
-          terms %in% context_white_streaming_collinear
+        # White's streaming test drops the collinear squares of these terms,
+        # and of their columns computed beforehand, since the pull request of
+        # N3 (0.17.0); in 0.16.0 it stopped on both.
         for (form in forms) {
           out <- context_run(fn, list(build = function() {
             m <- context_model(d, fit, "none", terms)
             list(m = m, data = context_form(form, m, d))
           }))
-          if (collinear) {
-            for (refused in list(out, expected)) {
-              expect_s3_class(refused, "error")
-              expect_match(conditionMessage(refused), "Auxiliary regression became rank deficient",
-                           fixed = TRUE, info = paste(fn, fit, terms, form))
-            }
-          } else {
-            context_same(out, expected, paste(fn, fit, terms, form), tolerance = tolerance)
-          }
+          context_same(out, expected, paste(fn, fit, terms, form), tolerance = tolerance)
         }
       }
     }
@@ -1257,6 +1822,9 @@ test_that("weights are the weights of the fit, whatever holds them", {
     tolerance <- if (identical(fn, "performFlignerKilleenTest")) context_fligner_tolerance else 1e-8
     context_same(run(context_model(d, "glm")), wls, paste(fn, "glm"), tolerance = tolerance)
     context_same(run(context_model(d, "wvec")), wls, paste(fn, "wvec"))
+    # The White and wild bootstraps estimate the weights of a fitWLS() fit
+    # again in each replicate, which those of lm() are not.
+    if (fn %in% c("performWhiteTestBootstrap", "performWildBootstrapTest")) next
     estimated <- context_model(d, "fitwls")
     context_same(run(estimated), run(lm(y ~ x1 + x2, data = d, weights = weights(estimated))),
                  paste(fn, "fitwls"))
@@ -1313,10 +1881,10 @@ test_that("weighted or offset fits without data run the test the runner names", 
     out <- suppressWarnings(runHeteroTests(m, use_cache = FALSE, progress = FALSE))
     expect_identical(out$white$method, "White's test for heteroscedasticity")
     expect_identical(out$koenker$method, "Koenker studentized Breusch-Pagan test")
-    expect_identical(unname(out$koenker$statistic),
-                     unname(performKoenkerTest(m, d)$statistic))
-    expect_identical(unname(out$white$statistic),
-                     unname(suppressWarnings(performWhiteTest(m, d))$statistic))
+    expect_identical_numbers(unname(out$koenker$statistic),
+                             unname(performKoenkerTest(m, d)$statistic))
+    expect_identical_numbers(unname(out$white$statistic),
+                             unname(suppressWarnings(performWhiteTest(m, d))$statistic))
   }
 })
 
@@ -1513,7 +2081,7 @@ test_that("an NA or empty group name is refused before the checks of data", {
       clearValidationCache()
       expect_error(get(fn)(transformed, d, bad),
                    "`group` must be (supplied as )?a single column name", info = fn)
-      expect_identical(white(), expected, info = paste(fn, bad))
+      expect_identical_numbers(white(), expected, info = paste(fn, bad))
     }
   }
 })
@@ -1557,8 +2125,8 @@ test_that("a group test run by the runner keeps the refusals of the context fina
     expect_error(run(plain, arranged, name), "cannot match the rows of `data`",
                  class = "heteroTests_data_rows_error")
     out <- run(plain, d, name)[[name]]
-    expect_identical(unname(out$statistic), unname(suppressWarnings(recipe(plain, d))$statistic),
-                     info = fn)
+    expect_identical_numbers(unname(out$statistic),
+                             unname(suppressWarnings(recipe(plain, d))$statistic), info = fn)
   }
 })
 
@@ -1764,7 +2332,7 @@ test_that("Pesaran's test computes an unbalanced panel from the periods each pai
                  expected, "the runner, Pesaran's test alone")
     expect_warning(re <- runPanelTests(call$m, call$data, "id", tests = "bp_random"),
                    "Unequal panel lengths")
-    expect_identical(both$bp_random, re$bp_random)
+    expect_identical_numbers(both$bp_random, re$bp_random)
   }
   # Without data, from the model frame of a model of the identifiers.
   ids_model <- lm(y ~ x1 + x2 + id + time, data = half)
@@ -1877,10 +2445,12 @@ test_that("Pesaran's test refuses a pair of id and time that repeats (R2)", {
                  class = "heteroTests_model_context_error")
     expect_error(runPanelTests(m, data, "id", "time"), refusal, fixed = TRUE,
                  class = "heteroTests_model_context_error")
-    expect_identical(performBPRandomEffectsTest(m, data, "id")$statistic,
-                     performBPRandomEffectsTest(lm(y ~ x1 + x2, data = d), d, "id")$statistic)
-    expect_identical(runPanelTests(m, data, "id", tests = "bp_random")$bp_random$statistic,
-                     performBPRandomEffectsTest(m, d, "id")$statistic)
+    expect_identical_numbers(
+      performBPRandomEffectsTest(m, data, "id")$statistic,
+      performBPRandomEffectsTest(lm(y ~ x1 + x2, data = d), d, "id")$statistic
+    )
+    expect_identical_numbers(runPanelTests(m, data, "id", tests = "bp_random")$bp_random$statistic,
+                             performBPRandomEffectsTest(m, d, "id")$statistic)
   }
   # More than one pair, and the names the call gives the columns.
   twice <- d
@@ -1893,9 +2463,9 @@ test_that("Pesaran's test refuses a pair of id and time that repeats (R2)", {
     fixed = TRUE
   )
   expect_error(performPesaranTest(m_twice, twice, "id", "period"), "and 1 more", fixed = TRUE)
-  # A fit with na.exclude is read by position until its step of the model
-  # context, and the pair is refused there too; from the review of increment
-  # 5, where the test returned 0.253 on it, with the repeated pair.
+  # A fit with na.exclude, as its twin with na.omit (increment 9): the pair is
+  # refused there too; from the review of increment 5, where the test
+  # returned 0.253 on it, with the repeated pair.
   excluded <- panel
   excluded$x2[50] <- NA
   m_excluded <- lm(y ~ x1 + x2, data = excluded, na.action = na.exclude)
@@ -1913,8 +2483,10 @@ test_that("the refusals of Pesaran's test take linear time", {
   # From the review of increment 5: the refusal of repeated pairs counted each
   # with a scan of every observation, and took 18 to 53 s on 120,000
   # observations with 40,000 repeated pairs; one pass takes well under a
-  # second, and so does the check of balance, which scanned the observations
-  # once for each unit. The bounds are generous, to hold on a slow machine.
+  # second. (The check of balance of the positional reading of a fit with
+  # na.exclude, which scanned the observations once for each unit and then
+  # took one pass too, went with that reading in increment 9.) The bounds are
+  # generous, to hold on a slow machine.
   skip_on_cran()
   old <- ht_set_log_level("SILENT")
   on.exit(ht_set_log_level(old), add = TRUE)
@@ -1932,12 +2504,6 @@ test_that("the refusals of Pesaran's test take linear time", {
   expect_lt(system.time(
     expect_error(rstop_repeated_panel_cells(big$id, big$time, "id", "time", "f"),
                  "and 39997 more", fixed = TRUE)
-  )[["elapsed"]], 1)
-  balanced <- data.frame(id = rep(1:4000, each = 30), time = rep(1:30, 4000))[-1, ]
-  expect_lt(system.time(
-    expect_error(rstop_unbalanced_panel(balanced$id, balanced$time, "id", "f"),
-                 "1 of its 4000 units is observed at fewer of its 30 periods, id = 1 at 29 of them",
-                 fixed = TRUE)
   )[["elapsed"]], 1)
 })
 
@@ -1969,8 +2535,8 @@ test_that("the panel tests read their identifiers at rows told apart", {
                class = "heteroTests_data_rows_error")
   expect_error(runPanelTests(m, numbered, "id", "time"), ties,
                class = "heteroTests_data_rows_error")
-  expect_identical(performScatterDiagnostic(m, numbered, "x"),
-                   performScatterDiagnostic(m, named, "x"))
+  expect_identical_numbers(performScatterDiagnostic(m, numbered, "x"),
+                           performScatterDiagnostic(m, named, "x"))
   expect_error(performScatterDiagnostic(m, numbered, "z"), ties,
                class = "heteroTests_data_rows_error")
 })
@@ -2025,42 +2591,1099 @@ test_that("the panel tests and the scatter diagnostic keep the refusals of the c
   }
 })
 
-test_that("a fit with na.exclude is read by the panel tests as before", {
-  # Its residuals are padded with NA at the rows it dropped, and the panel
-  # tests and the scatter diagnostic read them against the rows of `data` by
-  # position, as before 0.16.0, until the step of the model context that
-  # moves na.exclude: the statistics are NA, or computed with the NA, and data
-  # in another order are refused.
+# A call on a fit with na.exclude and on its twin, the same fit with na.omit:
+# the value or the condition, the warnings and the state of the generator.
+context_twin_run <- function(f) {
+  set.seed(7)
+  warnings <- character()
+  value <- withCallingHandlers(
+    tryCatch(f(), error = function(e) e),
+    warning = function(w) {
+      warnings <<- c(warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) invokeRestart("muffleMessage")
+  )
+  list(value = value, warnings = warnings, rng = .Random.seed)
+}
+
+# A result without the model a runner attaches to it and to each test, whose
+# na.action tells the two fits apart.
+context_without_model <- function(x) {
+  attr(x, "model") <- NULL
+  if (is.list(x) && !inherits(x, "htest")) {
+    for (k in seq_along(x)) {
+      if (!is.null(x[[k]])) attr(x[[k]], "model") <- NULL
+    }
+  }
+  x
+}
+
+# The fit of the matrix with na.exclude, x2 missing at rows 3, 7 and 11, and
+# its twin with na.omit (missing/na_exclude and missing/full).
+context_excluded_pair <- function(data = NULL) {
+  d <- if (is.null(data)) {
+    d <- context_data()
+    d$x2[c(3, 7, 11)] <- NA
+    d
+  } else {
+    data
+  }
+  list(
+    d = d,
+    excluded = lm(y ~ x1 + x2, data = d, na.action = na.exclude),
+    omitted = lm(y ~ x1 + x2, data = d)
+  )
+}
+
+test_that("a fit with na.exclude gives what the same fit with na.omit gives (B13)", {
+  # Increment 9. A fit with na.action = na.exclude drops the rows na.omit drops
+  # and pads residuals(), fitted(), weights() and hatvalues() with NA at them
+  # (naresid()). The checks of the model read those residuals and refused it
+  # ("Model residuals must be finite"), and so every test refused it, but
+  # those below; RESET stopped on its fitted values ("NA/NaN/Inf in 'x'"). The
+  # checks and the tests read one value per observation of the fit, as for
+  # na.omit: every function built on the context gives the value of the same
+  # fit with na.omit, with the same warnings, "Removed 3 observations due to
+  # missing values in x2" among them, and, for the resampling tests, the same
+  # draws of the generator. The spread-level and Davidian-Carroll tests, which
+  # left out the NA themselves, gave it already.
+  skip_on_cran()
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  recipes <- context_recipes()
+  for (fn in c(context_runnable(), "performBreuschPaganTest")) {
+    a <- context_twin_run(function() recipes[[fn]](pair$excluded, pair$d))
+    b <- context_twin_run(function() recipes[[fn]](pair$omitted, pair$d))
+    expect_false(inherits(b$value, "condition"), info = fn)
+    context_same_as_twin(a$value, b$value, fn)
+    expect_identical(a$warnings, b$warnings, info = fn)
+    expect_identical(a$rng, b$rng, info = fn)
+  }
+  expect_error(performRESETTest(pair$excluded, pair$d), NA)
+  expect_error(performKoenkerTest(pair$excluded), NA)
+  expect_identical(performKoenkerTest(pair$excluded), performKoenkerTest(pair$omitted))
+  # The checks of the model see the residuals of the fit: one per observation,
+  # at the positions na.omit gives them.
+  expect_error(rvalidateModelInputs(pair$excluded, "f"), NA)
+  expect_length(rmodel_unpad(pair$excluded, residuals(pair$excluded)), 117L)
+  expect_identical(rmodel_unpad(pair$excluded, residuals(pair$excluded)),
+                   residuals(pair$omitted))
+})
+
+test_that("the resampling tests draw the replicates of the same fit with na.omit (B13)", {
+  # Increment 9. The White and wild bootstraps, bootstrapTestStatistic() and
+  # the robust bootstraps refused a fit with na.exclude; the White bootstrap
+  # would have drawn its NA residuals, and bootstrapTestStatistic() its padded
+  # fitted values. They draw what they draw on the same fit with na.omit, and
+  # leave the generator where it leaves it.
+  skip_on_cran()
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  calls <- list(
+    white = function(m) performWhiteTestBootstrap(m, pair$d, B = 19),
+    wild = function(m) performWildBootstrapTest(m, pair$d, B = 19, progress = FALSE),
+    null = function(m) bootstrapTestStatistic(performKoenkerTest, m, pair$d, B = 19,
+                                              progress = FALSE),
+    pairs = function(m) bootstrapTestStatistic(performKoenkerTest, m, pair$d, B = 19,
+                                               progress = FALSE, resample = "pairs"),
+    robust = function(m) performBPTestRobust(m, pair$d, bootstrap = TRUE, B = 19),
+    fitwls = function(m) performWhiteTestBootstrap(fitWLS(m, pair$d), pair$d, B = 19)
+  )
+  for (k in names(calls)) {
+    a <- context_twin_run(function() calls[[k]](pair$excluded))
+    b <- context_twin_run(function() calls[[k]](pair$omitted))
+    expect_false(inherits(a$value, "condition"), info = k)
+    a$value$call <- b$value$call <- NULL
+    expect_identical(a$value, b$value, info = k)
+    expect_identical(a$rng, b$rng, info = k)
+  }
+})
+
+test_that("the runners give on a fit with na.exclude what they give with na.omit (B13)", {
+  # Increment 9. runHeteroTests() stopped on the refusal of White's test
+  # ("Diagnostic execution failed for White: Model residuals must be finite"),
+  # and so did runDiagnostics(), runTimeSeriesTests(), runAdvancedDiagnostics()
+  # and the helpers that run a test; runPanelTests() gave the statistics of the
+  # positional reading (below). They give the results of the same fit with
+  # na.omit, but for the attached model, whose na.action tells the two apart,
+  # and the Cook's distances of runDiagnostics(), one per row, which
+  # cooks.distance() pads.
+  skip_on_cran()
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  calls <- list(
+    runHeteroTests = function(m) runHeteroTests(m, pair$d, use_cache = FALSE, progress = FALSE),
+    without_data = function(m) runHeteroTests(m, use_cache = FALSE, progress = FALSE),
+    registered = function(m) {
+      runHeteroTests(m, pair$d, tests = c("cook_weisberg", "spread_level", "szroeter"),
+                     use_cache = FALSE, progress = FALSE)
+    },
+    streaming = function(m) {
+      runHeteroTests(m, pair$d, tests = c("white", "breusch_pagan", "koenker"),
+                     use_cache = FALSE, chunk_threshold_mb = 0, chunk_size = 7, progress = FALSE)
+    },
+    runTimeSeriesTests = function(m) runTimeSeriesTests(m, lags = 2),
+    runPanelTests = function(m) runPanelTests(m, pair$d, "id", "time"),
+    runAdvancedDiagnostics = function(m) runAdvancedDiagnostics(m, pair$d, bootstrap_B = 19)
+  )
+  for (k in names(calls)) {
+    a <- context_twin_run(function() calls[[k]](pair$excluded))
+    b <- context_twin_run(function() calls[[k]](pair$omitted))
+    expect_false(inherits(a$value, "condition"),
+                 info = paste(k, if (inherits(a$value, "condition")) conditionMessage(a$value)))
+    expect_identical(context_without_model(a$value), context_without_model(b$value), info = k)
+    expect_identical(a$warnings, b$warnings, info = k)
+  }
+  expect_match(context_twin_run(function() calls$runHeteroTests(pair$excluded))$warnings,
+               "Removed 3 observations due to missing values in x2", fixed = TRUE, all = FALSE)
+  a <- runDiagnostics(pair$excluded, pair$d, use_cache = FALSE, progress = FALSE)
+  b <- runDiagnostics(pair$omitted, pair$d, use_cache = FALSE, progress = FALSE)
+  expect_identical(a$influence$cooks_distance,
+                   naresid(pair$excluded$na.action, b$influence$cooks_distance))
+  a$influence <- b$influence <- NULL
+  expect_identical(context_without_model(a), context_without_model(b))
+})
+
+test_that("the panel tests read a fit with na.exclude at the rows it kept (B13)", {
+  # Increment 9. The panel tests and the scatter diagnostic read the padded
+  # residuals of a fit with na.exclude against the rows of `data` by position,
+  # as before 0.16.0 (decision 29): the random-effects statistic and the
+  # correlations were NA, Pesaran's statistic was computed with the NA of the
+  # rows the fit dropped, data in another order were refused, and so was an
+  # unbalanced panel of the rows of `data`. They read the residuals of the
+  # observations of the fit and the `id`, `time` and `vars` of the rows that
+  # hold them, as for the same fit with na.omit: Pesaran's CD of the rows of
+  # the fit, that of plm::pcdtest() (N12).
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  d <- pair$d
+  m <- pair$excluded
+  pesaran <- performPesaranTest(m, d, "id", "time")
+  expect_identical_numbers(pesaran, performPesaranTest(pair$omitted, d, "id", "time"))
+  expect_equal(unname(pesaran$statistic), 0.18909, tolerance = 1e-4)
+  re <- suppressWarnings(performBPRandomEffectsTest(m, d, "id"))
+  expect_false(is.na(re$statistic))
+  expect_identical_numbers(re, suppressWarnings(performBPRandomEffectsTest(pair$omitted, d, "id")))
+  expect_equal(unname(re$statistic), 2.0162, tolerance = 1e-4)
+  scatter <- performScatterDiagnostic(m, d, c("x1", "x2"))
+  expect_false(anyNA(scatter))
+  expect_identical_numbers(scatter, performScatterDiagnostic(pair$omitted, d, c("x1", "x2")))
+  # Data in another order, refused, give the value of the data in fit order.
+  set.seed(3)
+  shuffled <- d[sample(nrow(d)), ]
+  expect_identical_numbers(suppressWarnings(performBPRandomEffectsTest(m, shuffled, "id")), re)
+  expect_identical_numbers(performPesaranTest(m, shuffled, "id", "time"), pesaran)
+  expect_identical_numbers(performScatterDiagnostic(m, shuffled, c("x1", "x2")), scatter)
+  # An unbalanced panel of the rows of `data`, refused ("reads a fit with
+  # na.action = na.exclude by position"), is computed from the periods each
+  # pair of units shares, as for na.omit.
+  half <- context_data()[-(1:5), ]
+  half$x2[20] <- NA
+  m_half <- lm(y ~ x1 + x2, data = half, na.action = na.exclude)
+  expect_identical_numbers(
+    performPesaranTest(m_half, half, "id", "time"),
+    performPesaranTest(update(m_half, na.action = na.omit), half, "id", "time")
+  )
+  skip_if_not_installed("plm")
+  r <- residuals(pair$omitted)
+  rows <- d[names(r), ]
+  pd <- plm::pdata.frame(data.frame(id = rows$id, time = rows$time, e = unname(r)),
+                         index = c("id", "time"))
+  reference <- suppressWarnings(plm::pcdtest(pd$e, test = "cd"))
+  expect_equal(unname(pesaran$statistic), unname(reference$statistic), tolerance = 1e-10)
+  expect_equal(pesaran$p.value, reference$p.value, tolerance = 1e-10)
+})
+
+test_that("a gam with na.exclude is read as the same gam with na.omit (B13)", {
+  # From the review of increment 9. model.matrix() of an mgcv::gam() fit
+  # with na.exclude pads its design with NA rows at the rows the fit dropped,
+  # 120 rows for 117 residuals, and the context refused every such fit
+  # ("Internal error: the parts of the model context differ in length."),
+  # where the same gam with na.omit gives White 10.847, Koenker 8.363 and
+  # Pesaran 0.189. The design is read without the padded rows.
+  skip_if_not_installed("mgcv")
   old <- ht_set_log_level("SILENT")
   on.exit(ht_set_log_level(old), add = TRUE)
   d <- context_data()
   d$x2[c(3, 7, 11)] <- NA
-  m <- lm(y ~ x1 + x2, data = d, na.action = na.exclude)
-  expect_true(is.na(performBPRandomEffectsTest(m, d, "id")$statistic))
-  expect_true(all(is.na(performScatterDiagnostic(m, d, c("x1", "x2")))))
-  expect_equal(unname(performPesaranTest(m, d, "id", "time")$statistic), 0.713259,
-               tolerance = 1e-6)
-  set.seed(3)
-  expect_error(performBPRandomEffectsTest(m, d[sample(nrow(d)), ], "id"),
-               "are not in the order of the fit", class = "heteroTests_data_rows_error")
-  # Pesaran's test reads such a fit on its matrix of periods by units, and
-  # refuses an unbalanced panel of the rows of `data` there, as since the
-  # fifth step of the model context (N12), with a message that points to
-  # na.omit, with which the statistic of an unbalanced panel is computed.
-  half <- context_data()[-(1:5), ]
-  half$x2[20] <- NA
-  m_half <- lm(y ~ x1 + x2, data = half, na.action = na.exclude)
-  expect_error(
-    performPesaranTest(m_half, half, "id", "time"),
-    paste("performPesaranTest() reads a fit with na.action = na.exclude by position, on a",
-          "matrix of periods by units, and needs a balanced panel, every unit observed at the",
-          "same periods; the panel of the rows of `data` is unbalanced: 1 of its 12 units is",
-          "observed at fewer of its 10 periods, id = 1 at 5 of them. Refit the model with",
-          "na.action = na.omit"),
-    fixed = TRUE, class = "heteroTests_model_context_error"
+  excluded <- mgcv::gam(y ~ x1 + x2, data = d, na.action = na.exclude)
+  omitted <- mgcv::gam(y ~ x1 + x2, data = d)
+  expect_equal(nrow(stats::model.matrix(excluded)), 120L)
+  ctx <- rmodel_context(excluded, d, fn = "f")
+  expect_identical(ctx$design, rmodel_context(omitted, d, fn = "f")$design)
+  white_of <- function(m) performWhiteTest(m, d)
+  white <- white_of(excluded)
+  expect_identical_numbers(white, white_of(omitted))
+  expect_equal(unname(white$statistic), 10.847, tolerance = 1e-4)
+  expect_identical_numbers(performKoenkerTest(excluded, d), performKoenkerTest(omitted, d))
+  expect_identical_numbers(performPesaranTest(excluded, d, "id", "time"),
+                           performPesaranTest(omitted, d, "id", "time"))
+  expect_identical_numbers(performScatterDiagnostic(excluded, d, c("x1", "x2")),
+                           performScatterDiagnostic(omitted, d, c("x1", "x2")))
+  expect_identical_numbers(
+    context_without_model(runHeteroTests(excluded, d, use_cache = FALSE, progress = FALSE)),
+    context_without_model(runHeteroTests(omitted, d, use_cache = FALSE, progress = FALSE))
   )
-  expect_s3_class(performPesaranTest(update(m_half, na.action = na.omit), half, "id", "time"),
-                  "htest")
+  # performVIFDiagnostic() reads the design too, and gave NA; the Cook's
+  # distances of mgcv recycled the padded residuals against the leverages,
+  # with a warning, and are those of the twin, padded.
+  expect_identical_numbers(performVIFDiagnostic(excluded), performVIFDiagnostic(omitted))
+  expect_no_warning(influence <- performInfluenceDiagnostics(excluded))
+  expect_identical_numbers(
+    influence$cooks_distance,
+    naresid(excluded$na.action, performInfluenceDiagnostics(omitted)$cooks_distance)
+  )
+  # With a penalised smooth term, the tests that fit it again refuse it as its
+  # twin (decision 37).
+  smooth <- mgcv::gam(y ~ s(x1) + x2, data = d, na.action = na.exclude)
+  expect_identical_numbers(performKoenkerTest(smooth, d),
+                           performKoenkerTest(update(smooth, na.action = na.omit), d))
+  expect_error(performRESETTest(smooth, d), "cannot test a penalised mgcv::gam() fit",
+               fixed = TRUE, class = "heteroTests_model_context_error")
+})
+
+test_that("the functions outside the context read a fit with na.exclude as its twin (B13)", {
+  # From the review of increment 9. Past the checks of the model, which
+  # refused a fit with na.exclude, functions that are not built on the
+  # context read its padded residuals and fitted values: the recommendations
+  # stopped with "incompatible dimensions", the bubble plot, and so the plot
+  # suite and the report, with "replacement has 120 rows, data has 117", the
+  # other plots drew the NA with a warning of ggplot2 ("Removed 3 rows
+  # containing non-finite values"), and the RMSE of autoCompareRemediations()
+  # and analyzeMLResiduals() was NA. They give what they give on the same fit
+  # with na.omit; augment(), whose rows are per observation, gives the rows of
+  # the same fit with na.omit padded with NA rows at the rows the fit dropped.
+  skip_on_cran()
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  me <- pair$excluded
+  mo <- pair$omitted
+  same <- function(f, info) {
+    a <- suppressWarnings(f(me))
+    b <- suppressWarnings(f(mo))
+    expect_identical(a, b, info = info)
+  }
+  same(function(m) generateHeteroRecommendations(m)$profile, "recommendations")
+  same(function(m) identifyVariancePatterns(m, stats::model.frame(m)), "patterns")
+  same(function(m) autoCompareRemediations(m, pair$d)$metrics$RMSE, "RMSE")
+  expect_false(anyNA(autoCompareRemediations(me, pair$d)$metrics$RMSE[1:2]))
+  same(function(m) analyzeMLResiduals(m, pair$d)$rmse_reduction, "rmse_reduction")
+  plots <- list(
+    residuals_fitted = function(m) plotResidualsFitted(m),
+    enhanced = function(m) plotResidualsFitted(m, enhanced = TRUE),
+    spread_level = function(m) plotSpreadLevel(m),
+    density = function(m) plotResidualDensity(m),
+    qq = function(m) plotResidualQQ(m),
+    bubble = function(m) plotBubbleVariance(m),
+    before_after = function(m) plotBeforeAfter(m, fitWLS(m))
+  )
+  for (k in names(plots)) {
+    a <- plots[[k]](me)
+    b <- plots[[k]](mo)
+    expect_identical(a$data, b$data, info = k)
+    expect_no_warning(ggplot2::ggplot_build(a))
+  }
+  expect_identical(lapply(plotDiagnosticSuite(me), `[[`, "data"),
+                   lapply(plotDiagnosticSuite(mo), `[[`, "data"))
+  # augment(): the rows of the twin, padded with a row of NA at each row the
+  # fit dropped, named as naresid() names them; given the data of the fit,
+  # its rows, with the padded columns.
+  a <- generics::augment(runHeteroTests(me, use_cache = FALSE, progress = FALSE)[["white"]])
+  b <- generics::augment(runHeteroTests(mo, use_cache = FALSE, progress = FALSE)[["white"]])
+  expect_identical(nrow(a), nrow(pair$d))
+  expect_identical(names(a), names(b))
+  expect_identical(lapply(a[-c(3, 7, 11), ], unname), lapply(b, unname))
+  expect_true(all(is.na(a[c(3, 7, 11), setdiff(names(a), ".diagnostic")])))
+  expect_identical(rownames(a), as.character(seq_len(nrow(pair$d))))
+  white <- runHeteroTests(me, pair$d, use_cache = FALSE, progress = FALSE)[["white"]]
+  full <- generics::augment(white, data = pair$d)
+  expect_identical(unname(full$.fitted), unname(fitted(me)))
+  # The twin given the full data binds the rows it used (decision 34, from the
+  # review of increment 10), where it refused them: the rows of the fit with
+  # na.exclude but those it dropped.
+  twin <- generics::augment(
+    runHeteroTests(mo, pair$d, use_cache = FALSE, progress = FALSE)[["white"]], data = pair$d
+  )
+  expect_identical(nrow(twin), 117L)
+  expect_identical(lapply(full[-c(3, 7, 11), ], unname), lapply(twin, unname))
+})
+
+test_that("augment() and the remediation advice match the rows of data as the tests do", {
+  # Increment 10, from the re-review of increment 9 and with N5.
+  # recommendRemediationStrategies() correlates the residuals with the columns
+  # of `data` row by row, generateHeteroRecommendations() hands `data` to the
+  # tests and to the advice, and augment() of the results of the runner binds
+  # the columns of the fit to its rows. They read the i-th row of `data` with
+  # the i-th observation: named data in another order than the fit gave the
+  # advice of other rows, without an error, and augment() bound the fitted
+  # values to other rows; since the re-review of increment 9 data of another
+  # number of rows, as the full data of a fit that dropped rows, were refused,
+  # naming the two counts. They match the rows as the tests do: named data in
+  # any order, numbered data in the order of the fit and the full data of a
+  # fit that dropped rows give the value of the rows of the fit, on a fit with
+  # na.exclude as on its twin with na.omit; what the alignment refuses is
+  # refused, naming the function. The profile of the report describes `data`
+  # as given (from the review of increment 10).
+  skip_if_not_installed("dplyr")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  d <- pair$d
+  mo <- pair$omitted
+  me <- pair$excluded
+  rows <- d[names(mo$residuals), ]
+  renumbered <- rows
+  rownames(renumbered) <- NULL
+  set.seed(3)
+  shuffled <- d[sample(nrow(d)), ]
+  rows_shuffled <- rows[sample(nrow(rows)), ]
+  tr <- suppressWarnings(runHeteroTests(mo, d, use_cache = FALSE, progress = FALSE))
+  advice <- recommendRemediationStrategies(tr, mo, rows)
+  report <- suppressWarnings(generateHeteroRecommendations(mo, rows, include_report = FALSE))
+  for (m in list(omit = mo, exclude = me)) {
+    for (form in c("full", "shuffled", "rows_shuffled", "renumbered", "tibble")) {
+      data <- switch(form,
+        full = d, shuffled = shuffled, rows_shuffled = rows_shuffled, renumbered = renumbered,
+        tibble = dplyr::as_tibble(d)
+      )
+      info <- paste(class(m$na.action), form)
+      expect_identical(recommendRemediationStrategies(tr, m, data), advice, info = info)
+      got <- suppressWarnings(generateHeteroRecommendations(m, data, include_report = FALSE))
+      expect_identical_numbers(got$interpretations, report$interpretations, info = info)
+      expect_identical(got$remediation, report$remediation, info = info)
+      response <- as.character(stats::formula(m))[2]
+      expect_identical_numbers(got$profile,
+                               analyseDatasetCharacteristics(data, response = response),
+                               info = info)
+    }
+    # Numbered data in another order than the fit are refused by the guard
+    # (decision 3), as by the tests.
+    expect_error(recommendRemediationStrategies(tr, m, dplyr::as_tibble(d)[sample(nrow(d)), ]),
+                 class = "heteroTests_data_rows_error")
+    expect_error(
+      suppressWarnings(generateHeteroRecommendations(m, dplyr::as_tibble(d)[sample(nrow(d)), ])),
+      "generateHeteroRecommendations() cannot match the rows of `data`", fixed = TRUE
+    )
+  }
+  # The advice given the model frame of a fit with na.exclude is that of its
+  # twin (increment 9).
+  expect_identical(
+    recommendRemediationStrategies(tr, pair$excluded, stats::model.frame(pair$excluded)),
+    recommendRemediationStrategies(tr, pair$omitted, stats::model.frame(pair$omitted))
+  )
+  # augment() binds the rows of `data` as broom binds them, in the order of
+  # `data`, each row with its own fitted value and residual (decision 34): on a
+  # fit with na.omit the rows the fit used, 117 of the 120 of its full data; on
+  # a fit with na.exclude every row of its full data, with NA at the rows the
+  # fit dropped, the rows of its twin padded. Numbered data in another order
+  # are refused.
+  white <- tr[["white"]]
+  excluded <- suppressWarnings(
+    runHeteroTests(me, d, use_cache = FALSE, progress = FALSE)
+  )[["white"]]
+  fit_columns <- c(".fitted", ".resid", ".std.resid")
+  for (data in list(d, shuffled, rows, rows_shuffled)) {
+    omitted <- generics::augment(white, data = data)
+    expect_identical(rownames(omitted), rownames(data)[rownames(data) %in% names(mo$residuals)])
+    expect_identical(unname(omitted$.fitted), unname(fitted(mo)[rownames(omitted)]))
+    expect_identical(unname(omitted$.resid), unname(residuals(mo)[rownames(omitted)]))
+    expect_equal(unname(omitted$.fitted), unname(stats::predict(mo, newdata = omitted)),
+                 tolerance = 1e-12)
+    expect_identical(omitted$y, data[rownames(omitted), "y"])
+  }
+  full <- generics::augment(excluded, data = d)
+  expect_identical(nrow(full), nrow(d))
+  twin <- generics::augment(white, data = d)
+  expect_identical_numbers(lapply(full[-c(3, 7, 11), ], unname), lapply(twin, unname))
+  expect_identical(rownames(full)[-c(3, 7, 11)], rownames(twin))
+  expect_true(all(is.na(full[c(3, 7, 11), fit_columns])))
+  expect_identical(full$y, d$y)
+  # As broom::augment() binds the full data of a fit with na.exclude, in its
+  # order, and row by row as naresid() pads the fitted values.
+  if (requireNamespace("broom", quietly = TRUE)) {
+    reference <- broom::augment(me, data = d)
+    expect_equal(unname(full$.fitted), unname(reference$.fitted), tolerance = 1e-12)
+    expect_equal(unname(full$.resid), unname(reference$.resid), tolerance = 1e-12)
+  }
+  expect_identical_numbers(unname(full$.fitted), unname(stats::naresid(me$na.action, fitted(mo))))
+  full_shuffled <- generics::augment(excluded, data = shuffled)
+  expect_identical(rownames(full_shuffled), rownames(shuffled))
+  expect_identical(unname(full_shuffled$.fitted), unname(fitted(me)[rownames(shuffled)]))
+  # Without its dropped rows, a fit with na.exclude pads the rows of its
+  # observations in the order of the fit, as without `data` (increment 9).
+  padded <- generics::augment(excluded, data = rows)
+  expect_identical_numbers(generics::augment(excluded, data = rows_shuffled), padded)
+  expect_identical(nrow(padded), nrow(d))
+  expect_identical(padded$y[-c(3, 7, 11)], rows$y)
+  expect_error(generics::augment(white, data = dplyr::as_tibble(renumbered)[sample(117), ]),
+               "augment() cannot match the rows of `data`", fixed = TRUE)
+  # Data whose number of rows is a multiple of the number of fitted values had
+  # them recycled over their rows (the re-review of increment 9); numbered,
+  # they hold the rows of the fit under its row numbers, the other rows are
+  # not bound.
+  all_rows <- context_data()
+  plain <- lm(y ~ x1 + x2, data = all_rows)
+  results <- runHeteroTests(plain, all_rows, use_cache = FALSE, progress = FALSE)
+  doubled <- generics::augment(results[["white"]], data = rbind(all_rows, all_rows))
+  expect_identical(nrow(doubled), nrow(all_rows))
+  expect_identical(unname(doubled$.fitted), unname(fitted(plain)))
+  expect_identical(nrow(generics::augment(results, data = all_rows)),
+                   length(results) * nrow(all_rows))
+  # Data that lack a variable of the model, which the alignment compares, are
+  # refused, the message naming the function and what to pass (from the review
+  # of increment 10); main read them by position.
+  for (call in list(
+    function() recommendRemediationStrategies(tr, mo, d[, c("z", "id")]),
+    function() generics::augment(white, data = d[, c("z", "id")])
+  )) {
+    expect_error(call(), "and `data` lacks y, x1, x2. Pass the data the model was fitted to",
+                 fixed = TRUE)
+  }
+  # A model the context refuses by kind is refused by the three, as by every
+  # function built on it (from the review of increment 10).
+  binomial <- glm(I(y > median(y)) ~ x1 + x2, data = all_rows, family = binomial())
+  expect_error(recommendRemediationStrategies(results, binomial, all_rows),
+               "recommendRemediationStrategies() needs a model fitted by stats::lm()",
+               fixed = TRUE)
+})
+
+test_that("the recommendations keep the groups and profile the data as given", {
+  # From the review of increment 10. generateHeteroRecommendations() matched
+  # grouped data to the rows of the fit and returned them ungrouped when the
+  # fit dropped rows, so the analysis was grouped only on complete data; and
+  # it profiled the rows of the fit, whose missing values are none, so the
+  # advice on missing data never fired. The groups are kept on the rows of the
+  # fit, and the profile describes `data` as given.
+  skip_if_not_installed("dplyr")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_grouped_data()
+  d_na <- d
+  d_na$x2[c(3, 7, 11)] <- NA
+  m <- lm(y ~ x1 + x2, data = d_na)
+  grouped <- dplyr::group_by(dplyr::as_tibble(d_na), half)
+  rows <- rcontext_data_rows(m, grouped, fn = "f")
+  expect_s3_class(rows, "grouped_df")
+  expect_identical(dplyr::group_vars(rows), "half")
+  expect_identical(nrow(rows), 117L)
+  expect_identical(rows$y, d_na$y[-c(3, 7, 11)])
+  report <- suppressWarnings(generateHeteroRecommendations(m, grouped, include_report = FALSE))
+  complete <- suppressWarnings(generateHeteroRecommendations(
+    lm(y ~ x1 + x2, data = d), dplyr::group_by(dplyr::as_tibble(d), half), include_report = FALSE
+  ))
+  expect_identical(nrow(report$interpretations$results), nrow(complete$interpretations$results))
+  expect_identical(report$profile$n_obs, nrow(d_na))
+  # 40 of 120 values of x2 missing: the profile counts them, and the advice
+  # on missing data, a rate above 5%, fires.
+  d_many <- d[, c("y", "x1", "x2")]
+  d_many$x2[seq_len(40)] <- NA
+  m_many <- lm(y ~ x1 + x2, data = d_many)
+  many <- suppressWarnings(generateHeteroRecommendations(m_many, d_many, include_report = FALSE))
+  expect_identical(many$profile$n_obs, nrow(d_many))
+  expect_gt(many$profile$missingness$overall_rate, 0.05)
+  expect_true(any(grepl("multiple imputation", many$remediation$actions, fixed = TRUE)))
+})
+
+test_that("a grouped run of a fitWLS() fit is refused, the others refit each group (B11)", {
+  # Increment 10, decision 10. A grouped run refits the model within each
+  # group by evaluating its call on the rows of the group. The call of a
+  # fitWLS() fit is that of the model it refitted, without the weights it
+  # estimated, so each group was tested as the unweighted fit of its rows (on
+  # this matrix White's test gave 5.27, 7.54, 3.79 and 5.81 on the four groups
+  # of `group`, the values of lm() on each); such a run is refused, with the
+  # class of the refusals of the context, before any group is refitted. An lm,
+  # a weighted lm, whose weights are a column of the data, and a formula refit
+  # each group,
+  # as before; runDiagnostics(), which runs no grouped analysis, and the
+  # ungrouped data test the fitWLS() fit as a whole.
+  skip_if_not_installed("dplyr")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_grouped_data()
+  run <- function(m, data) {
+    runHeteroTests(m, data, tests = c("white", "koenker"), use_cache = FALSE, progress = FALSE)
+  }
+  for (grouping in names(context_groupings)) {
+    grouped <- context_grouped(d, grouping)
+    group_rows <- dplyr::group_rows(grouped)
+    for (fit in names(context_grouped_fits)) {
+      m <- context_grouped_fits[[fit]](d)
+      info <- paste(fit, grouping)
+      if (identical(fit, "fitwls")) {
+        refusal <- expect_error(run(m, grouped), class = "heteroTests_model_context_error",
+                                info = info)
+        expect_match(conditionMessage(refusal),
+                     "cannot run a grouped analysis of a fitWLS() fit", fixed = TRUE, info = info)
+        next
+      }
+      res <- run(m, grouped)
+      expect_s3_class(res, "hetero_grouped_suite")
+      expect_length(res, length(group_rows))
+      for (g in seq_along(group_rows)) {
+        part <- as.data.frame(d[group_rows[[g]], ])
+        ref <- if (identical(fit, "wls")) {
+          lm(y ~ x1 + x2, data = part, weights = w)
+        } else {
+          lm(y ~ x1 + x2, data = part)
+        }
+        expect_equal(unname(res[[g]]$koenker$statistic),
+                     unname(performKoenkerTest(ref)$statistic), tolerance = 1e-10,
+                     info = paste(info, g))
+        # White's test needs 20 observations, and on the groups of 15 of the
+        # two columns the runner falls back on another test, as before.
+        if (is.null(attr(res[[g]]$white, "extras")$status)) {
+          expect_equal(unname(res[[g]]$white$statistic),
+                       unname(performWhiteTest(ref)$statistic), tolerance = 1e-10,
+                       info = paste(info, g))
+        } else {
+          expect_error(performWhiteTest(ref), "requires at least 20", info = paste(info, g))
+        }
+      }
+    }
+  }
+  fw <- context_grouped_fits$fitwls(d)
+  whole <- run(fw, d)
+  expect_identical_numbers(run(fw, dplyr::ungroup(context_grouped(d, "one")))$white$statistic,
+                           whole$white$statistic)
+  diagnostics <- runDiagnostics(fw, context_grouped(d, "one"), use_cache = FALSE,
+                                progress = FALSE)
+  expect_identical_numbers(diagnostics$white$statistic, whole$white$statistic)
+})
+
+test_that("a refusal of the context in a group stops a grouped run (decision 6)", {
+  # From the second review of increment 11: a grouped run records the failure
+  # of a test in a group and goes on, and recorded a refusal of the model by
+  # the model context so too, as a failed test of NA, where the run on
+  # ungrouped data stops with it. It stops the grouped run now, with its class
+  # and message: a penalised gam given a test that needs least squares
+  # (decision 37; Szroeter's test gave 0.687 and 0.777 in two groups on main),
+  # and a multivariate lm. The failures of a test for another reason are
+  # recorded in its group, as before (White's test on groups of 15, above).
+  skip_if_not_installed("dplyr")
+  skip_if_not_installed("mgcv")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_grouped_data()
+  grouped <- context_grouped(d, "one")
+  run <- function(m, tests) {
+    suppressWarnings(runHeteroTests(m, grouped, tests = tests, use_cache = FALSE,
+                                    progress = FALSE))
+  }
+  g <- mgcv::gam(y ~ s(x1, k = 4) + x2, data = d)
+  refusals <- list(
+    szroeter = "Model cannot be tested for Szroeter: performSzroeterTest() cannot test a penalised",
+    student_bp = "performStudentizedBPTest() cannot test a penalised mgcv::gam() fit",
+    quantile_regression = "performQuantileRegressionTest() cannot test a penalised"
+  )
+  for (test in names(refusals)) {
+    out <- tryCatch(run(g, c("white", test)), error = function(e) e)
+    expect_s3_class(out, "heteroTests_model_context_error")
+    expect_match(conditionMessage(out), refusals[[test]], fixed = TRUE, info = test)
+  }
+  # The tests that take the gam run in each group.
+  res <- run(g, c("white", "koenker"))
+  expect_s3_class(res, "hetero_grouped_suite")
+  expect_true(all(vapply(unclass(res), function(s) is.finite(s$koenker$statistic), logical(1))))
+  mm <- lm(cbind(y, x2) ~ x1, data = d)
+  expect_error(run(mm, c("white", "koenker")),
+               paste("Model cannot be tested for White: performWhiteTest() needs a model",
+                     "with one response"),
+               fixed = TRUE, class = "heteroTests_model_context_error")
+})
+
+test_that("the runners take the data a tidymodels workflow was fitted to (N5)", {
+  # Increment 10. A workflow is tested on the fit of its engine, which names
+  # its response `..y` and its predictors as the workflow's preprocessing made
+  # them, and the runners refused the data the workflow was fitted to ("`data`
+  # lacks ..y. Pass `data = NULL`"), as every test refused the data of a
+  # parsnip fit made with fit_xy(). They map them to the variables of the
+  # engine by the workflow's preprocessing (hardhat::forge()), the outcome as
+  # the preprocessing transforms it (decision 35), or the outcome of fit_xy()
+  # to `..y`, confirm the rows by the alignment of the context, and test the
+  # model frame of the engine's fit: the value without `data`. Data in another
+  # order than the fit, and the data of a step that dropped rows at the fit
+  # only, are refused with the class of the guard, and data that cannot be
+  # mapped with a message that says why. augment() of the results maps the
+  # data in the same way, and binds them, each row with the value of its
+  # observation (from the review of increment 10), checked row by row against
+  # the prediction of the workflow on that row alone (context_tidy_own(), from
+  # the second review, where the values were compared with those of the
+  # model frame in their order).
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  numbers <- function(suite) {
+    lapply(suite, function(r) list(r$method, r$statistic, r$parameter, r$p.value))
+  }
+  # x3 = x1 * 3 (wf_local_variable) has an infinite VIF, which
+  # performVIFDiagnostic() gives as about 1 / eps, or as Inf for every column,
+  # as the last bits of the BLAS decide (under 0.18.0): on CRAN the VIFs of
+  # such a design are left out.
+  aliased_vif <- function(diagnostics) {
+    if (numbers_on_cran() && isTRUE(any(diagnostics$vif > 1e12, na.rm = TRUE))) {
+      diagnostics$vif <- NULL
+    }
+    diagnostics
+  }
+  models <- context_tidy_models()
+  for (name in names(models)) {
+    model <- models[[name]]
+    fit <- model$fit(model$data)
+    engine <- if (inherits(fit, "workflow")) workflows::extract_fit_engine(fit) else fit$fit
+    reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+    reference_diagnostics <- runDiagnostics(fit, use_cache = FALSE, progress = FALSE)
+    for (form in setdiff(context_tidy_forms, "null")) {
+      data <- context_tidy_data(model, form)
+      expect <- context_tidy_expect(name, form)
+      info <- paste(name, form)
+      got <- tryCatch(runHeteroTests(fit, data, use_cache = FALSE, progress = FALSE),
+                      error = function(e) e)
+      bound <- tryCatch(generics::augment(reference[["white"]], data = data),
+                        error = function(e) e)
+      bound_expect <- context_tidy_augment_expect(name, form)
+      if (identical(expect, "value")) {
+        expect_identical_numbers(numbers(got), numbers(reference), info = info)
+        if (!identical(name, "parsnip_formula")) {
+          expect_identical_numbers(got, reference, info = info)
+          expect_identical_numbers(
+            aliased_vif(runDiagnostics(fit, data, use_cache = FALSE, progress = FALSE)),
+            aliased_vif(reference_diagnostics), info = info
+          )
+        }
+        # Each row bound with the values of its own observation, the rows the
+        # preprocessing or the engine dropped left out; a preprocessing that
+        # drops rows of new data, or reorders them, does not say which row of
+        # `data` each observation comes from, and augment() refuses them.
+        if (identical(bound_expect, "value")) {
+          expect_false(inherits(bound, "error"), info = info)
+          expect_identical(nrow(bound), length(fitted(engine)), info = info)
+          expect_true(context_tidy_own(fit, data, bound, context_tidy_rows(nrow(bound))),
+                      info = info)
+        } else {
+          expect_s3_class(bound, "error")
+          expect_match(conditionMessage(bound), bound_expect, fixed = TRUE, info = info)
+        }
+      } else if (identical(expect, "guard")) {
+        for (e in list(got, bound)) {
+          expect_s3_class(e, "heteroTests_data_rows_error")
+          expect_match(conditionMessage(e),
+                       "A tidymodels workflow is tested on the fit of its engine", fixed = TRUE,
+                       info = info)
+          expect_match(conditionMessage(e), "Pass the data the workflow was fitted to",
+                       fixed = TRUE, info = info)
+        }
+      } else {
+        expect_s3_class(got, "error")
+        expect_match(conditionMessage(got), expect, fixed = TRUE, info = info)
+        # The tests of the runner name the variables `data` lacks; augment()
+        # names itself and says what to pass (context_tidy_augment_expect()).
+        expect_s3_class(bound, "error")
+        expect_match(conditionMessage(bound), bound_expect, fixed = TRUE, info = info)
+      }
+    }
+  }
+  # Case weights are compared as the weights of a fit are for the tests: other
+  # weights are refused (from the review of increment 10).
+  model <- models$wf_case_weights
+  fit <- model$fit(model$data)
+  other <- model$data
+  other$cw <- hardhat::importance_weights(rev(model$data$w))
+  expect_error(runHeteroTests(fit, other, use_cache = FALSE, progress = FALSE),
+               "(weights) differs from the model frame", fixed = TRUE)
+  # A subset of the data lacks rows of the fit: refused with the class of the
+  # guard and the advice of a workflow, as data in another order are; grouped
+  # data are not mapped; and a lazy dtplyr table is collected first.
+  model <- models$wf_formula
+  fit <- model$fit(model$data)
+  subset_refusal <- expect_error(
+    runHeteroTests(fit, model$data[1:100, ], use_cache = FALSE, progress = FALSE),
+    class = "heteroTests_data_rows_error"
+  )
+  expect_match(conditionMessage(subset_refusal), "Missing rows: 101, 102, 103", fixed = TRUE)
+  expect_match(conditionMessage(subset_refusal), "Pass the data the workflow was fitted to",
+               fixed = TRUE)
+  expect_error(
+    runHeteroTests(fit, dplyr::group_by(model$data, group), use_cache = FALSE, progress = FALSE),
+    "only an ungrouped data frame is mapped to them", fixed = TRUE
+  )
+  if (requireNamespace("dtplyr", quietly = TRUE)) {
+    expect_identical_numbers(
+      runHeteroTests(fit, dtplyr::lazy_dt(model$data), use_cache = FALSE, progress = FALSE),
+      runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+    )
+  }
+})
+
+test_that("augment() never binds a row of a workflow's data the values of another row", {
+  # From the second review of increment 10. augment() took the rows a
+  # workflow's preprocessing mapped for the rows of `data` in their order
+  # whenever it kept every row; step_arrange(), which it applies to new data,
+  # sorts them, and augment() bound each row of `data` the fitted value and the
+  # residual of another, by up to 8.08 on these data, without an error. The
+  # mapped rows are traced to the rows of `data`, and a preprocessing that
+  # reorders them is refused; the runners, which test the model frame of the
+  # engine once the rows are confirmed, give the value without `data`.
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_data()
+  sorted_by <- list(
+    ascending = function(rec) recipes::step_arrange(rec, x1),
+    descending = function(rec) recipes::step_arrange(rec, dplyr::desc(x2))
+  )
+  for (direction in names(sorted_by)) {
+    rec <- sorted_by[[direction]](recipes::recipe(y ~ x1 + x2, data = d))
+    fit <- workflows::fit(
+      workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                           parsnip::linear_reg()),
+      data = d
+    )
+    reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+    expect_identical_numbers(runHeteroTests(fit, d, use_cache = FALSE, progress = FALSE), reference,
+                             info = direction)
+    expect_error(generics::augment(reference$white, data = d),
+                 "reorders the rows of `data` it maps", fixed = TRUE, info = direction)
+    # Without `data`, the model frame of the engine, in the order it was fitted in.
+    frame <- generics::augment(reference$white)
+    expect_identical(unname(frame$.fitted), unname(fitted(workflows::extract_fit_engine(fit))))
+  }
+  # A step that makes a row from other rows, as cumsum() or row_number() do,
+  # maps `data` shuffled to other values, and is refused too: in the order of
+  # the fit 0.16.0 bound each row its own values there, and the refusal is
+  # conservative (decision 14; from the third review of increment 10).
+  from_other_rows <- list(
+    cumsum = function(rec) recipes::step_mutate(rec, cs = cumsum(x1)),
+    row_number = function(rec) recipes::step_mutate(rec, rn = dplyr::row_number())
+  )
+  for (kind in names(from_other_rows)) {
+    rec <- from_other_rows[[kind]](recipes::recipe(y ~ x1 + x2, data = d))
+    fit <- workflows::fit(
+      workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                           parsnip::linear_reg()),
+      data = d
+    )
+    reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+    expect_identical_numbers(runHeteroTests(fit, d, use_cache = FALSE, progress = FALSE), reference,
+                             info = kind)
+    expect_error(generics::augment(reference$white, data = d),
+                 "reorders the rows of `data` it maps, or makes a row from other rows",
+                 fixed = TRUE, info = kind)
+  }
+  # A recipe that maps each row on its own is traced, and each row of `data`,
+  # shuffled under its own names, has its own values.
+  fit <- workflows::fit(
+    workflows::add_model(
+      workflows::add_recipe(workflows::workflow(),
+                            recipes::step_log(recipes::recipe(y ~ x1 + x2, data = d), x1)),
+      parsnip::linear_reg()
+    ),
+    data = d
+  )
+  bound <- generics::augment(runHeteroTests(fit, use_cache = FALSE, progress = FALSE)$white,
+                             data = d)
+  expect_true(context_tidy_own(fit, d, bound))
+})
+
+test_that("a step a recipe skips on new data that changed the outcome is named", {
+  # From the second review of increment 10. step_log(y, skip = TRUE), the
+  # idiom recipes recommends for the outcome, transforms the outcome at the
+  # fit only, so the data the workflow was fitted to, mapped by its
+  # preprocessing, hold the outcome untransformed, and were refused with the
+  # advice to pass the data the workflow was fitted to, which they were. The
+  # refusal says that a step skipped on new data stands between them.
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  model <- context_tidy_models()$wf_outcome_skipped
+  fit <- model$fit(model$data)
+  reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+  for (call in list(
+    function() runHeteroTests(fit, model$data, use_cache = FALSE, progress = FALSE),
+    function() runDiagnostics(fit, model$data, use_cache = FALSE, progress = FALSE),
+    function() generics::augment(reference$white, data = model$data)
+  )) {
+    refusal <- expect_error(call(), class = "heteroTests_data_rows_error")
+    expect_match(conditionMessage(refusal),
+                 "has a step it skips on new data, step_log() with `skip = TRUE`", fixed = TRUE)
+    expect_match(conditionMessage(refusal), "Pass `data = NULL`", fixed = TRUE)
+    expect_no_match(conditionMessage(refusal), "Pass the data the workflow was fitted to",
+                    fixed = TRUE)
+  }
+  expect_match(
+    conditionMessage(expect_error(generics::augment(reference$white, data = model$data))),
+    "^augment\\(\\) cannot map `data`"
+  )
+  # Only the steps without which the rows are not confirmed are named: a
+  # step_filter() skipped on new data that keeps every row is not, and two
+  # skipped steps that each changed a variable are (from the third review of
+  # increment 10, where every skipped step was named).
+  refusal_of <- function(rec) {
+    fit <- workflows::fit(
+      workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                           parsnip::linear_reg()),
+      data = model$data
+    )
+    conditionMessage(expect_error(
+      runHeteroTests(fit, model$data, use_cache = FALSE, progress = FALSE),
+      class = "heteroTests_data_rows_error"
+    ))
+  }
+  base <- recipes::recipe(ypos ~ x1 + x2, data = model$data)
+  harmless <- refusal_of(recipes::step_log(recipes::step_filter(base, x1 > -Inf), ypos,
+                                           skip = TRUE))
+  expect_match(harmless, "has a step it skips on new data, step_log() with `skip = TRUE`",
+               fixed = TRUE)
+  expect_no_match(harmless, "step_filter()", fixed = TRUE)
+  both <- refusal_of(recipes::step_sqrt(recipes::step_log(base, ypos, skip = TRUE), x1,
+                                        skip = TRUE))
+  expect_match(both, "has steps it skips on new data, step_log() and step_sqrt() with",
+               fixed = TRUE)
+})
+
+test_that("the results of a workflow keep what augment() needs, not the workflow", {
+  # From the second review of increment 10. The runners kept the workflow, or
+  # the parsnip fit, on each result, for augment(): its fit and its mold hold
+  # the data, so that the results of runHeteroTests(wf) with three tests on
+  # 5,000 rows took 2,794 KB serialized, where they took 1,522 KB. They keep
+  # its blueprint, the number of rows its preprocessing kept, and the column
+  # of its case weights (rtidymodels_map()), or the outcome of a parsnip fit,
+  # the results otherwise those of the fit of the engine.
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  set.seed(1)
+  n <- 2000
+  d <- data.frame(x = stats::runif(n), z = stats::rnorm(n))
+  d$y <- 1 + d$x + stats::rnorm(n, sd = 1 + d$x)
+  fit <- workflows::fit(
+    workflows::add_model(workflows::add_formula(workflows::workflow(), y ~ x + z),
+                         parsnip::linear_reg()),
+    data = d
+  )
+  suite <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+  engine <- runHeteroTests(workflows::extract_fit_engine(fit), use_cache = FALSE,
+                           progress = FALSE)
+  kept <- attr(suite$white, "tidymodels")
+  expect_s3_class(kept, "heteroTests_tidymodels")
+  expect_named(kept, c("kind", "blueprint", "fitted_rows", "case_weights"))
+  expect_identical(kept$fitted_rows, as.integer(n))
+  expect_s3_class(kept$blueprint, "hardhat_blueprint")
+  expect_lt(length(serialize(kept, NULL)), 16 * 1024)
+  expect_gt(length(serialize(fit, NULL)), 100 * 1024)
+  # Without it, the results of the fit of the engine.
+  for (k in names(suite)) {
+    attr(suite[[k]], "tidymodels") <- NULL
+  }
+  expect_identical_numbers(lapply(suite, unclass), lapply(engine, unclass))
+  xy <- parsnip::fit_xy(parsnip::linear_reg(), x = d[, c("x", "z")], y = d[, "y", drop = FALSE])
+  kept_xy <- attr(runHeteroTests(xy, use_cache = FALSE, progress = FALSE)$white, "tidymodels")
+  expect_identical(unclass(kept_xy), list(kind = "model_fit", y_var = "y"))
+  # The record holds the blueprint of the workflow as the workflow keeps it
+  # (decision 36, decided by the author on the fourth review of increment 10),
+  # and no fit: a recipe written at the top level keeps a few KB, augment()
+  # maps the data as with the workflow's own blueprint, and two runs give
+  # identical() results. The third review rewrote the expressions of the
+  # steps, which changed what some of them mean.
+  rec <- eval(bquote(recipes::step_log(.(recipes::recipe(y ~ x + z, data = d)), x)), globalenv())
+  fit <- workflows::fit(
+    workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                         parsnip::linear_reg()),
+    data = d
+  )
+  suite <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+  kept <- attr(suite$white, "tidymodels")
+  expect_named(kept, c("kind", "blueprint", "fitted_rows", "case_weights"))
+  expect_identical(kept$blueprint, workflows::extract_mold(fit)$blueprint)
+  expect_false(context_holds_fit(kept))
+  expect_lt(length(serialize(kept, NULL)), 16 * 1024)
+  expect_identical_numbers(suite, runHeteroTests(fit, use_cache = FALSE, progress = FALSE))
+  own <- suite$white
+  whole <- kept
+  whole$blueprint <- workflows::extract_mold(fit)$blueprint
+  attr(own, "tidymodels") <- whole
+  expect_identical_numbers(generics::augment(suite$white, data = d),
+                           generics::augment(own, data = d))
+  expect_identical_numbers(runHeteroTests(fit, d, use_cache = FALSE, progress = FALSE), suite)
+})
+
+test_that("augment() and the runners read the variables a step reads as the step reads them", {
+  # From the fourth review of increment 10. The third review wrote the
+  # variables a step read of the function it was written in into its
+  # expression as values, which changed what some of them mean or broke
+  # them: a variable a later step makes a column (C), a variable named as a
+  # column a step removed (D), a function called by its name as a string
+  # (I, J), and variables holding a symbol or a call, which were spliced in
+  # as code (R, R2). augment() refused or bound other values where 0.16.0
+  # bound each row its own, and the runners refused data where the second
+  # version gave White 14.6845, or 14.8861 for D. The blueprint is kept as
+  # the workflow keeps it (decision 36).
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  set.seed(42)
+  n <- 120
+  d <- data.frame(x = stats::runif(n, 1, 5), z = stats::rnorm(n))
+  d$y <- 1 + 2 * d$x + stats::rnorm(n, sd = 0.3 + 0.6 * d$x)
+  wfit <- function(rec) {
+    workflows::fit(
+      workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                           parsnip::linear_reg()),
+      data = d
+    )
+  }
+  base <- function() recipes::recipe(y ~ x + z, data = d)
+  cases <- list(
+    C = function() {
+      k <- 3
+      wfit(recipes::step_mutate(recipes::step_mutate(base(), x2 = x * k), k = 1))
+    },
+    D = function() {
+      z <- 2
+      wfit(recipes::step_mutate(recipes::step_rm(base(), z), x2 = x * z))
+    },
+    I = function() {
+      f <- function(v) v * 2
+      wfit(recipes::step_mutate(base(), x2 = do.call("f", list(x))))
+    },
+    J = function() {
+      f <- function(v) v * 2
+      wfit(recipes::step_mutate(base(), x2 = sapply(x, "f")))
+    },
+    R = function() {
+      nm <- as.name("z")
+      wfit(recipes::step_mutate(base(), s = nchar(deparse(nm)) + x))
+    },
+    R2 = function() {
+      cl <- quote(z + 1)
+      wfit(recipes::step_mutate(base(), s = length(cl) + x))
+    }
+  )
+  white <- c(C = 14.6845, D = 14.8861, I = 14.6845, J = 14.6845, R = 14.6845, R2 = 14.6845)
+  for (name in names(cases)) {
+    fit <- cases[[name]]()
+    reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+    expect_identical_numbers(runHeteroTests(fit, d, use_cache = FALSE, progress = FALSE), reference,
+                             info = name)
+    expect_equal(unname(reference$white$statistic), white[[name]], tolerance = 1e-5, info = name)
+    bound <- generics::augment(reference$white, data = d)
+    expect_identical(nrow(bound), as.integer(n), info = name)
+    expect_true(context_tidy_own(fit, d, bound, context_tidy_rows(n)), info = name)
+  }
+})
+
+test_that("the data of a fit_xy() fit with case weights are refused", {
+  # From the third review of increment 10. fit_xy() takes its case weights as
+  # a vector, and the fit records the column of its outcome but not that of
+  # its weights, so the weights of `data` cannot be compared with those of the
+  # fit, as those of a workflow are: other weights were taken (White 14.2138
+  # on the reviewer's data, with the weights reversed). Such data are refused;
+  # without `data` the model frame of the fit, its own weights among them, is
+  # tested.
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  model <- context_tidy_models()$parsnip_xy_weights
+  fit <- model$fit(model$data)
+  reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+  expect_identical_numbers(
+    unname(reference$white$statistic),
+    unname(runHeteroTests(fit$fit, use_cache = FALSE, progress = FALSE)$white$statistic)
+  )
+  other <- model$data
+  other$w <- rev(other$w)
+  for (data in list(model$data, other)) {
+    for (call in list(
+      function() runHeteroTests(fit, data, use_cache = FALSE, progress = FALSE),
+      function() runDiagnostics(fit, data, use_cache = FALSE, progress = FALSE),
+      function() generics::augment(reference$white, data = data)
+    )) {
+      expect_error(call(), "cannot compare the case weights of a parsnip fit made with fit_xy()",
+                   fixed = TRUE, class = "heteroTests_data_rows_error")
+    }
+  }
+})
+
+test_that("case weights are compared on the rows a recipe keeps of new data", {
+  # From the second review of increment 10. The case weights of a workflow
+  # were mapped only when its preprocessing kept every row of `data`, so that
+  # with a step_filter() it applies to new data other weights were accepted
+  # (White 9.4702 on the reviewer's data, with the weights reversed). A recipe
+  # gives the weights of the rows it keeps, in their order, and they are
+  # compared.
+  for (p in c("workflows", "parsnip", "recipes", "hardhat", "dplyr")) {
+    skip_if_not_installed(p)
+  }
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  model <- context_tidy_models()$wf_filter_case_weights
+  fit <- model$fit(model$data)
+  reference <- runHeteroTests(fit, use_cache = FALSE, progress = FALSE)
+  expect_identical_numbers(runHeteroTests(fit, model$data, use_cache = FALSE, progress = FALSE),
+                           reference)
+  other <- model$data
+  other$cw <- hardhat::importance_weights(rev(model$data$w))
+  expect_error(runHeteroTests(fit, other, use_cache = FALSE, progress = FALSE),
+               "(weights) differs from the model frame", fixed = TRUE)
+  # And a recipe that sorts the rows gives their weights in that order.
+  rec <- recipes::step_arrange(recipes::recipe(y ~ x1 + x2 + cw, data = model$data), x1)
+  sorted <- workflows::fit(
+    workflows::add_case_weights(
+      workflows::add_model(workflows::add_recipe(workflows::workflow(), rec),
+                           parsnip::linear_reg()),
+      cw
+    ),
+    data = model$data
+  )
+  expect_identical_numbers(runHeteroTests(sorted, model$data, use_cache = FALSE, progress = FALSE),
+                           runHeteroTests(sorted, use_cache = FALSE, progress = FALSE))
+  expect_error(runHeteroTests(sorted, other, use_cache = FALSE, progress = FALSE),
+               "(weights) differs from the model frame", fixed = TRUE)
+})
+
+test_that("fitWLS() pads its outputs per row on a fit with na.exclude (B13)", {
+  # Increment 9. The refit of fitWLS() keeps the na.action of the model, so
+  # residuals(), fitted() and weights() of a fit with na.exclude are padded
+  # with NA at the rows it dropped, as for any lm; its estimated variances,
+  # the attribute "variance_model", had one value per observation of the fit,
+  # and are padded the same way. The record of the variance function, which
+  # the bootstraps read by observation, keeps one row per observation, that of
+  # the same fit with na.omit.
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  pair <- context_excluded_pair()
+  for (formula in list(NULL, ~ z)) {
+    a <- fitWLS(pair$excluded, pair$d, var_formula = formula)
+    b <- fitWLS(pair$omitted, pair$d, var_formula = formula)
+    omitted <- pair$excluded$na.action
+    expect_length(attr(a, "variance_model"), nrow(pair$d))
+    expect_identical_numbers(attr(a, "variance_model"), naresid(omitted, attr(b, "variance_model")))
+    expect_true(all(is.na(attr(a, "variance_model")[c(3, 7, 11)])))
+    expect_identical_numbers(weights(a), naresid(omitted, weights(b)))
+    expect_identical_numbers(residuals(a), naresid(omitted, residuals(b)))
+    expect_identical_numbers(coef(a), coef(b))
+    expect_identical_numbers(attr(a, "variance_function"), attr(b, "variance_function"))
+  }
+  # Without na.exclude nothing is padded.
+  b <- fitWLS(pair$omitted, pair$d)
+  expect_identical(attr(b, "variance_model"), 1 / b$weights)
 })
 
 test_that("a second formula is read at the rows of the fit, not by position (B9)", {
@@ -2111,12 +3734,12 @@ test_that("a second formula is read at the rows of the fit, not by position (B9)
   for (nm in names(calls)) {
     f <- calls[[nm]]
     expected <- numbers(f(m, d))
-    expect_identical(numbers(f(m, d[perm, ])), expected, info = nm)
+    expect_identical_numbers(numbers(f(m, d[perm, ])), expected, info = nm)
     for (refused in list(dplyr::as_tibble(d)[perm, ], dplyr::arrange(d, x1), rbind(d[1:5, ], d))) {
       expect_error(f(m, refused), "cannot match the rows of `data`",
                    class = "heteroTests_data_rows_error", info = nm)
     }
-    expect_identical(numbers(f(m_na, renumbered)), numbers(f(m_na, complete)), info = nm)
+    expect_identical_numbers(numbers(f(m_na, renumbered)), numbers(f(m_na, complete)), info = nm)
     expect_error(f(m_na, reversed), class = "heteroTests_data_rows_error", info = nm)
     expect_error(f(m_repeated, dplyr::as_tibble(repeated)),
                  "tie on every column of the model frame that is compared",
@@ -2166,10 +3789,10 @@ test_that("a variable of a second formula is not read from the workspace (R3)", 
                tolerance = 1e-6)
   # A variable the model frame holds under its own name is read from it, and
   # the functions of the formula from its environment.
-  expect_identical(performCookWeisbergTest(m, var_formula = ~ x1)$statistic,
-                   performCookWeisbergTest(m, d, var_formula = ~ x1)$statistic)
-  expect_identical(coef(fitWLS(m, var_formula = ~ log(x1) + I(x2^2))),
-                   coef(fitWLS(m, d, var_formula = ~ log(x1) + I(x2^2))))
+  expect_identical_numbers(performCookWeisbergTest(m, var_formula = ~ x1)$statistic,
+                           performCookWeisbergTest(m, d, var_formula = ~ x1)$statistic)
+  expect_identical_numbers(coef(fitWLS(m, var_formula = ~ log(x1) + I(x2^2))),
+                           coef(fitWLS(m, d, var_formula = ~ log(x1) + I(x2^2))))
 })
 
 test_that("a constant of a second formula is evaluated as R evaluates it", {
@@ -2186,16 +3809,16 @@ test_that("a constant of a second formula is evaluated as R evaluates it", {
   k <- 2
   squared <- performCookWeisbergTest(m, var_formula = ~ I(hp^2))
   expect_equal(unname(squared$statistic), 0.549586699, tolerance = 1e-8)
-  expect_identical(performCookWeisbergTest(m, var_formula = ~ I(hp^k))$statistic,
-                   squared$statistic)
-  expect_identical(performCookWeisbergTest(m, mtcars, var_formula = ~ I(hp^k))$statistic,
-                   squared$statistic)
-  expect_identical(performVarianceFormTest(m, var_formula = ~ I(hp^k))$statistic,
-                   performVarianceFormTest(m, var_formula = ~ I(hp^2))$statistic)
-  expect_identical(performVarianceFormTest(m, mtcars, against = ~ I(hp^k))$statistic,
-                   performVarianceFormTest(m, mtcars, against = ~ I(hp^2))$statistic)
-  expect_identical(coef(fitWLS(m, var_formula = ~ I(hp^k))),
-                   coef(fitWLS(m, var_formula = ~ I(hp^2))))
+  expect_identical_numbers(performCookWeisbergTest(m, var_formula = ~ I(hp^k))$statistic,
+                           squared$statistic)
+  expect_identical_numbers(performCookWeisbergTest(m, mtcars, var_formula = ~ I(hp^k))$statistic,
+                           squared$statistic)
+  expect_identical_numbers(performVarianceFormTest(m, var_formula = ~ I(hp^k))$statistic,
+                           performVarianceFormTest(m, var_formula = ~ I(hp^2))$statistic)
+  expect_identical_numbers(performVarianceFormTest(m, mtcars, against = ~ I(hp^k))$statistic,
+                           performVarianceFormTest(m, mtcars, against = ~ I(hp^2))$statistic)
+  expect_identical_numbers(coef(fitWLS(m, var_formula = ~ I(hp^k))),
+                           coef(fitWLS(m, var_formula = ~ I(hp^2))))
   # pi, a constant of base R.
   expect_equal(unname(performCookWeisbergTest(m, var_formula = ~ hp + I(pi * hp))$statistic),
                1.02417975, tolerance = 1e-8)
@@ -2317,8 +3940,8 @@ test_that("the tests that read nothing from data match it as every test does (de
       expect_error(run(m, refused[[nm]]), "cannot match the rows of `data`",
                    class = "heteroTests_data_rows_error", info = paste(fn, nm))
     }
-    expect_identical(numbers(run(m, d[perm, ])), expected, info = fn)
-    expect_identical(numbers(run(mn, renumbered)), numbers(run(mn, dn)), info = fn)
+    expect_identical_numbers(numbers(run(m, d[perm, ])), expected, info = fn)
+    expect_identical_numbers(numbers(run(mn, renumbered)), numbers(run(mn, dn)), info = fn)
   }
   expect_equal(unname(performSpearmanTest(m, d)$statistic), 1.445, tolerance = 1e-3)
   expect_equal(unname(performSpearmanTest(mn, renumbered)$statistic), 0.9509, tolerance = 1e-4)
@@ -2361,8 +3984,340 @@ test_that("a variable of var_formula missing at an observation of the fit is nam
   expect_warning(out <- performCookWeisbergTest(m_dropped, dropped, var_formula = ~ z),
                  "Removed 1 observations due to missing values in z", fixed = TRUE)
   complete <- dropped[stats::complete.cases(dropped[, c("y", "x1", "x2")]), ]
-  expect_identical(
+  expect_identical_numbers(
     out$statistic,
     performCookWeisbergTest(lm(y ~ x1 + x2, data = complete), complete, var_formula = ~ z)$statistic
   )
+})
+
+# --- increment 8: the resampling tests ----------------------------------------
+
+# The fit of a cell, and the cell's data, by id.
+context_built <- function(id) {
+  context_cells()[[id]]$build()
+}
+
+test_that("each White bootstrap replicate is the stored design refitted to the draws", {
+  # The draws are those of before increment 8, in the same order: the
+  # residuals resampled from the session's generator, one sample() per
+  # replicate. On a plain design, where the stored design is the design
+  # rebuilt from `data`, each replicate is the refit of the formula to the
+  # fitted values plus the draws, which the White bootstrap refitted before,
+  # and its statistic White's test on that refit.
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  built <- context_built("fit/ols/none/none/data_frame")
+  m <- built$m
+  d <- built$data
+  set.seed(31)
+  boot <- performWhiteTestBootstrap(m, d, B = 5)
+  after <- .Random.seed
+  set.seed(31)
+  by_hand <- vapply(seq_len(5), function(b) {
+    refit_data <- d
+    refit_data$y <- stats::fitted(m) + sample(stats::residuals(m), replace = TRUE)
+    unname(performWhiteTest(lm(y ~ x1 + x2, data = refit_data), refit_data)$statistic)
+  }, numeric(1))
+  expect_identical(.Random.seed, after)
+  expect_identical_numbers(boot$boot_statistics, by_hand)
+  expect_identical_numbers(boot$statistic, performWhiteTest(m, d)$statistic)
+  expect_false(exists("rwhite_test_rebuilt_design", envir = asNamespace("heteroTests"),
+                      inherits = FALSE))
+})
+
+test_that("the resampling tests refit their replicates without data (B12)", {
+  # The weights and the offset of these fits are columns of the data. Without
+  # `data` the White bootstrap rebuilt the design from the model frame, which
+  # holds them as "(weights)" and "(offset)", and stopped ("object 'w' not
+  # found"), and the robust tests and the wild bootstrap stopped on a model
+  # with an offset() term or a transformed variable ("The following variables
+  # are missing from input data: o"); bootstrapTestStatistic(), given the model
+  # frame, refused the transformed fit ("`data` does not reproduce the fit").
+  # Each now gives the value it gives with `data`.
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  runs <- list(
+    white_bootstrap = function(m, d) performWhiteTestBootstrap(m, d, B = 9),
+    wild = function(m, d) performWildBootstrapTest(m, d, B = 9, progress = FALSE),
+    white_robust = function(m, d) performWhiteTestRobust(m, d, bootstrap = TRUE, B = 9),
+    bp_robust = function(m, d) performBPTestRobust(m, d, bootstrap = TRUE, B = 9)
+  )
+  for (id in c("fit/wls/none/none", "fit/ols/argument/none", "fit/wls/term/none",
+               "terms/ols/none/median", "terms/wls/none/ns")) {
+    with_data <- context_built(paste0(id, "/data_frame"))
+    without <- context_built(paste0(id, "/null"))
+    frame <- context_built(paste0(id, "/model_frame"))
+    for (route in names(runs)) {
+      set.seed(5)
+      expected <- runs[[route]](with_data$m, with_data$data)
+      for (other in list(without, frame)) {
+        set.seed(5)
+        out <- runs[[route]](other$m, other$data)
+        info <- paste(route, id)
+        expect_identical_numbers(unname(out$statistic), unname(expected$statistic), info = info)
+        expect_identical_numbers(out$p.value, expected$p.value, info = info)
+        expect_identical_numbers(out$boot_statistics, expected$boot_statistics, info = info)
+        expect_identical_numbers(out$bootstrap$replicates, expected$bootstrap$replicates,
+                                 info = info)
+        expect_identical_numbers(out$robust_details$bootstrap$replicates,
+                                 expected$robust_details$bootstrap$replicates, info = info)
+      }
+    }
+    set.seed(5)
+    expected <- bootstrapTestStatistic(performKoenkerTest, with_data$m, with_data$data, B = 9,
+                                       progress = FALSE)
+    set.seed(5)
+    out <- bootstrapTestStatistic(performKoenkerTest, frame$m, frame$data, B = 9,
+                                  progress = FALSE)
+    expect_identical_numbers(out$replicates, expected$replicates, info = id)
+    expect_identical_numbers(out$p_value, expected$p_value, info = id)
+  }
+})
+
+test_that("a term computed from the rows keeps the values of the fit in every replicate", {
+  # cut(x1, quantile(x1)) computed other breaks on the rows the fit kept: the
+  # White bootstrap stopped ("factor ... has new levels") and
+  # bootstrapTestStatistic() and the robust bootstraps refused the fit
+  # ("`data` does not reproduce the fit"). On a fit that dropped rows,
+  # I(x1 > median(x1)) took the median of the rows it kept: the White bootstrap
+  # gave 11.039 for 10.336, and the bootstraps refused it. Each gives the value
+  # of the same fit with the column computed beforehand.
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  runs <- list(
+    white_bootstrap = function(m, d) performWhiteTestBootstrap(m, d, B = 9),
+    koenker = function(m, d) {
+      bootstrapTestStatistic(performKoenkerTest, m, d, B = 9, progress = FALSE)
+    },
+    pairs = function(m, d) {
+      bootstrapTestStatistic(performKoenkerTest, m, d, B = 9, resample = "pairs",
+                             progress = FALSE)
+    },
+    white_robust = function(m, d) performWhiteTestRobust(m, d, bootstrap = TRUE, B = 9)
+  )
+  numbers <- function(x) {
+    unlist(list(x$statistic, x$p.value, x$boot_statistics, x$original_statistic,
+                x$replicates, x$p_value, x$robust_details$bootstrap$replicates))
+  }
+  for (fit in c("ols", "wls")) {
+    built <- context_built(paste("terms", fit, "none", "cut", "data_frame", sep = "/"))
+    reference <- context_precomputed_fit(fit, "cut")
+    for (route in names(runs)) {
+      set.seed(8)
+      out <- runs[[route]](built$m, built$data)
+      set.seed(8)
+      expected <- runs[[route]](reference$m, reference$data)
+      expect_equal(numbers(out), numbers(expected), tolerance = 1e-10, info = paste(route, fit))
+    }
+  }
+  median_full <- context_built("missing/median_full")
+  precomputed <- context_built("missing/median_precomputed")
+  for (route in names(runs)) {
+    set.seed(8)
+    out <- runs[[route]](median_full$m, median_full$data)
+    set.seed(8)
+    expected <- runs[[route]](precomputed$m, precomputed$data)
+    expect_equal(numbers(out), numbers(expected), tolerance = 1e-10, info = route)
+  }
+})
+
+test_that("bootstrapTestStatistic() bootstraps a Gaussian glm as the lm it is (N8)", {
+  # It refused every glm ("supports Gaussian `lm` models only"), as its refits
+  # by least squares would drop a family and a link. A glm with the Gaussian
+  # family and the identity link is the least-squares fit of lm() with its
+  # prior weights, and its replicates are those of that lm.
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  for (offset in context_offsets) {
+    glm_cell <- context_built(paste("fit/glm", offset, "none/data_frame", sep = "/"))
+    lm_cell <- context_built(paste("fit/wls", offset, "none/data_frame", sep = "/"))
+    for (test in list(performKoenkerTest, performWhiteTest, performBPTest)) {
+      set.seed(4)
+      ours <- bootstrapTestStatistic(test, glm_cell$m, glm_cell$data, B = 9, progress = FALSE)
+      set.seed(4)
+      as_lm <- bootstrapTestStatistic(test, lm_cell$m, lm_cell$data, B = 9, progress = FALSE)
+      expect_equal(ours$replicates, as_lm$replicates, tolerance = 1e-8, info = offset)
+      expect_equal(ours$original_statistic, as_lm$original_statistic, tolerance = 1e-8)
+      expect_identical(ours$p_value, as_lm$p_value)
+    }
+    set.seed(4)
+    robust <- performWhiteTestRobust(glm_cell$m, glm_cell$data, bootstrap = TRUE, B = 9)
+    set.seed(4)
+    robust_lm <- performWhiteTestRobust(lm_cell$m, lm_cell$data, bootstrap = TRUE, B = 9)
+    expect_identical(robust$p.value_bootstrap, robust_lm$p.value_bootstrap)
+  }
+  # Another family or link is refused, as before, and so, since increment 11,
+  # with the class of the context, is a penalised mgcv::gam() fit (decision
+  # 37), where every gam was refused without it.
+  d <- context_data()
+  set.seed(77)
+  d$count <- stats::rpois(nrow(d), exp(0.2 + 0.3 * d$x1))
+  expect_error(
+    bootstrapTestStatistic(performKoenkerTest, glm(count ~ x1 + x2, data = d, family = poisson),
+                           d, B = 9, progress = FALSE),
+    "supports Gaussian `lm` models only", fixed = TRUE
+  )
+  skip_if_not_installed("mgcv")
+  expect_error(
+    bootstrapTestStatistic(performKoenkerTest, mgcv::gam(y ~ s(x1) + x2, data = d), d, B = 9,
+                           progress = FALSE),
+    "bootstrapTestStatistic() cannot test a penalised mgcv::gam() fit (s(x1))", fixed = TRUE,
+    class = "heteroTests_model_context_error"
+  )
+})
+
+test_that("the White bootstrap matches a gam to its data by name (N17)", {
+  # The residuals of a gam carry no names, and the White bootstrap took its
+  # data by position: given its rows shuffled under their own row names it
+  # added each draw to the fitted value of another row (p = 0.05 where the
+  # data in the order of the fit give 0.2). It matches them by the row names
+  # of the model frame.
+  skip_if_not_installed("mgcv")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  for (id in c("class/gam_shuffled", "class/gam_offset_shuffled", "panel/unit_gam_shuffled")) {
+    cell <- context_cells()[[id]]
+    shuffled <- cell$build()
+    in_order <- context_cells()[[cell$reference]]$build()
+    set.seed(6)
+    out <- performWhiteTestBootstrap(shuffled$m, shuffled$data, B = 19)
+    set.seed(6)
+    expected <- performWhiteTestBootstrap(in_order$m, in_order$data, B = 19)
+    expect_identical_numbers(out$boot_statistics, expected$boot_statistics, info = id)
+    expect_identical_numbers(out$p.value, expected$p.value, info = id)
+  }
+})
+
+test_that("the resampling tests refuse an edited fit and a frame they cannot rebuild", {
+  # New refusals: a fit whose coefficients were changed after the fit (M8), on
+  # which the White bootstrap returned 11.145 and the wild bootstrap 9.044, the
+  # values before the edit, and a fit with model = FALSE whose data are gone,
+  # given a shuffled tibble, on which the White bootstrap returned the value of
+  # other rows ("frame").
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  edited <- context_built("class/edited")
+  for (call in list(
+    function() performWhiteTestBootstrap(edited$m, edited$data, B = 9),
+    function() performWildBootstrapTest(edited$m, edited$data, B = 9, progress = FALSE),
+    function() performWhiteTestRobust(edited$m, edited$data, bootstrap = TRUE, B = 9)
+  )) {
+    expect_error(call(), "does not reproduce its residuals from its design and coefficients",
+                 class = "heteroTests_model_context_error")
+  }
+  skip_if_not_installed("dplyr")
+  gone <- context_built("class/model_false_tibble")
+  expect_error(performWhiteTestBootstrap(gone$m, gone$data, B = 9),
+               "cannot use the model frame of `model`",
+               class = "heteroTests_model_context_error")
+})
+
+test_that("pairs resampling codes a factor a replicate leaves a level out of as a refit does", {
+  # Two rows each of two levels: some replicates draw none of them. Each such
+  # replicate is the refit of the model to the rows it drew, as before
+  # increment 8, which drops the levels it did not draw and the contrasts
+  # matrix of a factor that loses levels. Increment 8 took the rows of the
+  # stored design with `[`, which drops its contrasts: a fit with
+  # `contrasts = list(f = "contr.sum")` lost its replicates (8 of 40 left), a
+  # character regressor kept a column of zeros for a value no row held (32 of
+  # 40), and a factor whose contrasts attribute has a row for each of its four
+  # levels stopped the whole call ("wrong number of contrast matrix rows").
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_data()
+  set.seed(42)
+  d$f <- factor(sample(c(rep("a", 58), rep("b", 58), "c", "c", "d", "d")))
+  d$ch <- as.character(d$f)
+  d$fs <- d$f
+  stats::contrasts(d$fs) <- stats::contr.sum(4)
+  fits <- list(
+    factor = list(y ~ x1 + x2 + f, NULL),
+    character = list(y ~ x1 + x2 + ch, NULL),
+    contr_sum = list(y ~ x1 + x2 + f, list(f = "contr.sum")),
+    attribute = list(y ~ x1 + x2 + fs, NULL)
+  )
+  n <- nrow(d)
+  B <- 20L
+  set.seed(21)
+  draws <- lapply(seq_len(B), function(b) sample.int(n, replace = TRUE))
+  expect_true(any(vapply(draws, function(i) nlevels(droplevels(d$f[i])) < 4L, logical(1))))
+  for (name in names(fits)) {
+    formula <- fits[[name]][[1L]]
+    contrasts <- fits[[name]][[2L]]
+    m <- lm(formula, data = d, contrasts = contrasts)
+    set.seed(21)
+    out <- bootstrapTestStatistic(performKoenkerTest, m, d, B = B, resample = "pairs",
+                                  progress = FALSE)
+    expected <- vapply(draws, function(i) {
+      db <- d[i, , drop = FALSE]
+      refit <- suppressWarnings(lm(formula, data = db, contrasts = contrasts))
+      unname(performKoenkerTest(refit, db)$statistic)
+    }, numeric(1))
+    expect_identical(out$effective_samples, B, info = name)
+    expect_equal(out$replicates, expected, tolerance = 1e-8, info = name)
+  }
+})
+
+test_that("the resampling tests refuse a fitWLS() fit of a gam with smooth terms (M8)", {
+  # fitWLS() of an mgcv::gam() fit with smooth terms returns an lm whose terms
+  # rebuild one column for each variable of the formula, for the coefficients
+  # of the basis of the smooths. The White and wild bootstraps returned a value
+  # on that design, and Koenker's test and bootstrapTestStatistic() stopped on
+  # "(subscript) logical subscript too long". The context refuses such a fit,
+  # as it refuses a fit whose design does not reproduce its residuals, and
+  # points to the gam, as refitting gives the same fit again.
+  skip_if_not_installed("mgcv")
+  old <- ht_set_log_level("SILENT")
+  on.exit(ht_set_log_level(old), add = TRUE)
+  d <- context_data()
+  # Since increment 11 fitWLS() refuses a penalised gam itself (decision 37);
+  # a fixed smooth, the least-squares fit of its basis, it refits.
+  expect_error(fitWLS(mgcv::gam(y ~ s(x1) + x2, data = d), d),
+               "fitWLS() cannot refit a penalised mgcv::gam() fit", fixed = TRUE,
+               class = "heteroTests_model_context_error")
+  g <- suppressWarnings(fitWLS(mgcv::gam(y ~ s(x1, fx = TRUE) + x2, data = d), d))
+  for (call in list(
+    function() performWhiteTestBootstrap(g, d, B = 9),
+    function() performWildBootstrapTest(g, d, B = 9, progress = FALSE),
+    function() bootstrapTestStatistic(performKoenkerTest, g, d, B = 9, progress = FALSE),
+    function() performKoenkerTest(g, d),
+    function() performWhiteTest(g, d)
+  )) {
+    expect_error(call(), paste0(
+      "does not reproduce its residuals from its design and coefficients: its terms rebuild a ",
+      "design of 3 columns for its 11 coefficients, as those of fitWLS() of an mgcv::gam() fit ",
+      "with smooth terms do, which refitting gives again. Test the gam itself, or give fitWLS() ",
+      "a fit with a parametric term such as splines::ns() in place of each smooth."
+    ), fixed = TRUE, class = "heteroTests_model_context_error")
+  }
+  # Another fit whose coefficients do not match its design keeps the hint of
+  # every refusal of M8.
+  m <- lm(y ~ x1 + x2, data = d)
+  m$coefficients <- c(m$coefficients, extra = 1)
+  expect_error(
+    performKoenkerTest(m, d),
+    "its terms rebuild a design of 3 columns for its 4 coefficients. Refit the model.",
+    fixed = TRUE, class = "heteroTests_model_context_error"
+  )
+})
+
+test_that("bootstrapTestStatistic() refuses a multivariate lm as every test does (M7)", {
+  # It stopped on "'length = 4' in coercion to 'logical(1)'".
+  d <- context_data()
+  mlm <- lm(cbind(y, ypos) ~ x1 + x2, data = d)
+  expect_error(
+    bootstrapTestStatistic(performKoenkerTest, mlm, d, B = 9, progress = FALSE),
+    "needs a model with one response; `model` has 2", fixed = TRUE,
+    class = "heteroTests_model_context_error"
+  )
+  # Anything that is not a fit is left to the checks of the model, which name
+  # its class, as before (the check of M7 read `model$residuals` first).
+  for (bad in list("model", 1)) {
+    expect_error(
+      bootstrapTestStatistic(performKoenkerTest, bad, d, B = 9, progress = FALSE),
+      sprintf(paste0("Provide an object fitted with stats::lm() or stats::glm() before running ",
+                     "Bootstrap helper (received class: %s)"), class(bad)[1L]),
+      fixed = TRUE
+    )
+  }
 })

@@ -9,7 +9,8 @@
 # data frame of the fit, shuffled with its own row names, a tibble, a shuffled
 # tibble, a shuffled data.table, dplyr::arrange(), the model frame), the rows
 # the fit dropped (na.omit with the full data, the complete rows named or
-# renumbered, the tibble; na.exclude), the identifiers (rows in front, rows
+# renumbered, the tibble; na.exclude, against its twin with na.omit, in the
+# block exclude/), the identifiers (rows in front, rows
 # at the end, a fit to repeated rows, repeated row names, character row names
 # as a tibble, a repeated (id, time)) and the panels of increment 5 (a fit
 # that drops every row of a unit, by an lm, a weighted lm, a weighted Gaussian
@@ -245,11 +246,11 @@ context_form <- function(form, m, d) {
 context_cell <- function(id, block, build, fit = "ols", offset = "none", terms = "none",
                          form = "data_frame", needs = character(), reference = NULL,
                          expect = "value", defect = character(), base = NULL,
-                         base_expect = NULL) {
+                         base_expect = NULL, twin = NULL) {
   list(
     id = id, block = block, build = build, fit = fit, offset = offset, terms = terms,
     form = form, needs = needs, reference = reference, expect = expect, defect = defect,
-    base = base, base_expect = base_expect
+    base = base, base_expect = base_expect, twin = twin
   )
 }
 
@@ -405,10 +406,14 @@ context_cells <- function() {
   missing_cell("median_null", function() {
     list(m = stats::lm(y ~ I(x1 > median(x1)) + x2, data = d_med), data = NULL)
   }, reference = "missing/median_precomputed", defect = c("B5", "L1"), terms = "median")
-  # na.exclude is increment 9: until then the tests refuse its padded residuals.
-  missing_cell("na_exclude", function() {
+  # A fit with na.exclude (increment 9, B13), whose twin is the same fit with
+  # na.omit given the same data (the block `exclude/` below). The tests
+  # refused it ("Model residuals must be finite"), RESET stopped on it, and the
+  # panel tests and the scatter diagnostic read its padded residuals against
+  # the rows of `data` by position.
+  add(context_cell("missing/na_exclude", "missing", function() {
     list(m = stats::lm(y ~ x1 + x2, data = d_na, na.action = stats::na.exclude), data = d_na)
-  }, reference = NULL, expect = "Model residuals must be finite")
+  }, form = "na_exclude", reference = "missing/full", defect = "B13", twin = "missing/full"))
 
   # A group that is missing at observations of the fit (increment 4). The
   # group tests leave those observations out, with the warning "Removed N
@@ -613,6 +618,143 @@ context_cells <- function() {
     list(m = stats::lm(y ~ x1 + x2, data = d, subset = 21:120), data = NULL)
   }, form = "null", reference = "subset/rows", defect = "B15"))
 
+  # A fit with na.action = na.exclude (increment 9, B13). It drops the rows
+  # na.omit drops, and pads residuals(), fitted(), weights() and hatvalues()
+  # with NA at them (naresid()): the tests refused it ("Model residuals must be
+  # finite"), RESET stopped on it ("NA/NaN/Inf in 'x'"), and the panel tests
+  # and the scatter diagnostic read its padded residuals against the rows of
+  # `data` by position. Each cell has a twin, the same fit with na.omit given
+  # the same data, and a test gives on it what it gives on its twin, its value
+  # or its refusal, and an output with one value per row padded as naresid()
+  # pads it (test-model-context.R). Besides missing/na_exclude, a regressor
+  # missing, in the other forms of its data, the values are missing in the
+  # response, in x1, the variable and the ordering of the recipes, in the group,
+  # in the id and the time of the panel tests at rows the fit dropped, and in
+  # z, the variable of a second formula; with weights and an offset, a Gaussian
+  # glm, a fitWLS() fit, a log model, a subset, data with row names of their
+  # own, and a balanced and an unbalanced panel. `fit_with(na_action)` fits the
+  # model, `data_of(m)` gives the data the test is given; `twin` names an
+  # existing cell, or the twin is the cell `exclude/<id>_omit`.
+  exclude_pair <- function(id, fit_with, data_of, twin = NULL, form = "data_frame",
+                           needs = character(), fit = "ols", offset = "none", terms = "none",
+                           expect = "value") {
+    twin_id <- if (is.null(twin)) paste0("exclude/", id, "_omit") else twin
+    if (is.null(twin)) {
+      add(context_cell(twin_id, "exclude", function() {
+        m <- fit_with(stats::na.omit)
+        list(m = m, data = data_of(m))
+      }, fit = fit, offset = offset, terms = terms, form = form, needs = needs,
+      expect = expect))
+    }
+    add(context_cell(paste0("exclude/", id), "exclude", function() {
+      m <- fit_with(stats::na.exclude)
+      list(m = m, data = data_of(m))
+    }, fit = fit, offset = offset, terms = terms, form = form, needs = needs,
+    reference = twin_id, defect = "B13", twin = twin_id))
+  }
+  na_fit <- function(data) {
+    force(data)
+    function(na_action) stats::lm(y ~ x1 + x2, data = data, na.action = na_action)
+  }
+  # A regressor missing, x2 at rows 3, 7 and 11, in the other forms of data:
+  # the twins are the cells of the block of missing rows.
+  exclude_pair("shuffled", na_fit(d_na), function(m) {
+    set.seed(3)
+    d_na[sample(nrow(d_na)), ]
+  }, twin = "missing/full_shuffled", form = "shuffled")
+  exclude_pair("complete_named", na_fit(d_na), function(m) complete,
+               twin = "missing/complete_named", form = "complete_named")
+  exclude_pair("complete_renumbered", na_fit(d_na), function(m) renumbered,
+               twin = "missing/complete_renumbered", form = "complete_renumbered")
+  exclude_pair("tibble", na_fit(d_na), function(m) dplyr::as_tibble(d_na),
+               twin = "missing/tibble", form = "tibble", needs = "dplyr")
+  exclude_pair("tibble_shuffled", na_fit(d_na), function(m) {
+    set.seed(3)
+    dplyr::as_tibble(d_na)[sample(nrow(d_na)), ]
+  }, form = "tibble_shuffled", needs = "dplyr", expect = "guard")
+  exclude_pair("null", na_fit(d_na), function(m) NULL, twin = "missing/null", form = "null")
+  exclude_pair("model_frame", na_fit(d_na), function(m) stats::model.frame(m),
+               form = "model_frame")
+  # The response missing, and x1, a regressor and the variable or ordering of
+  # the recipes of Goldfeld-Quandt, Glejser, Park, Szroeter and Harrison-McCabe.
+  d_y <- d
+  d_y$y[c(3, 7, 11)] <- NA
+  exclude_pair("response", na_fit(d_y), function(m) d_y)
+  d_x1 <- d
+  d_x1$x1[c(3, 7, 11)] <- NA
+  exclude_pair("x1", na_fit(d_x1), function(m) d_x1)
+  # Data with row names of their own, in the order of the fit and shuffled.
+  named_na <- d_na
+  rownames(named_na) <- paste0("obs", seq_len(nrow(d_na)))
+  exclude_pair("named", na_fit(named_na), function(m) named_na)
+  exclude_pair("named_shuffled", na_fit(named_na), function(m) {
+    set.seed(3)
+    named_na[sample(nrow(named_na)), ]
+  }, form = "shuffled")
+  # Weights and an offset, from columns of the data, with and without `data`.
+  wls_offset_fit <- function(na_action) {
+    stats::lm(y ~ x1 + x2, data = d_na, weights = w, offset = o, na.action = na_action)
+  }
+  exclude_pair("wls_offset", wls_offset_fit, function(m) d_na, fit = "wls", offset = "argument")
+  exclude_pair("wls_offset_null", wls_offset_fit, function(m) NULL, form = "null", fit = "wls",
+               offset = "argument")
+  # A weighted Gaussian glm, and a fitWLS() fit of the lm.
+  exclude_pair("glm", function(na_action) {
+    stats::glm(y ~ x1 + x2, data = d_na, weights = w, na.action = na_action)
+  }, function(m) d_na, fit = "glm")
+  exclude_pair("fitwls", function(na_action) fitWLS(na_fit(d_na)(na_action)),
+               function(m) d_na, fit = "fitwls")
+  # A Gaussian mgcv::gam() fit, without and with a smooth term: its design,
+  # model.matrix.gam(), is padded with NA rows at the rows the fit dropped,
+  # which the context took for parts of different lengths, refusing every
+  # such fit (from the review of increment 9). The tests of increment 2 and
+  # the White bootstrap refuse the smooth term, as for its twin (decision 23),
+  # and the wild bootstrap every gam.
+  exclude_pair("gam", function(na_action) {
+    mgcv::gam(y ~ x1 + x2, data = d_na, na.action = na_action)
+  }, function(m) d_na, needs = "mgcv")
+  exclude_pair("gam_smooth", function(na_action) {
+    mgcv::gam(y ~ s(x1) + x2, data = d_na, na.action = na_action)
+  }, function(m) d_na, needs = "mgcv")
+  # A log model, whose model frame holds the terms, with and without `data`.
+  log_fit <- function(na_action) {
+    stats::lm(log(ypos) ~ log(x1) + x2, data = d_na, na.action = na_action)
+  }
+  exclude_pair("log", log_fit, function(m) d_na, terms = "log")
+  exclude_pair("log_null", log_fit, function(m) NULL, form = "null", terms = "log")
+  # A subset given by index, whose rows the fit drops before na.exclude does:
+  # the padding is of the rows of the subset.
+  d_sub <- d
+  d_sub$x2[c(30, 45)] <- NA
+  exclude_pair("subset", function(na_action) {
+    stats::lm(y ~ x1 + x2, data = d_sub, subset = 21:120, na.action = na_action)
+  }, function(m) d_sub)
+  # A group missing at an observation of the fit and at a row it dropped, as
+  # the cells of the block of missing groups, whose fits are the twins; and a
+  # model of the group, whose fit drops the rows of the missing group.
+  exclude_pair("group", na_fit(d_gn), function(m) d_gn, twin = "group/na_dropped")
+  exclude_pair("group_shuffled", na_fit(d_gn), function(m) d_gn[group_perm, ],
+               twin = "group/na_dropped_shuffled", form = "shuffled")
+  exclude_pair("group_renumbered", na_fit(d_gn), function(m) gn_complete,
+               twin = "group/na_dropped_renumbered", form = "complete_renumbered")
+  exclude_pair("group_factor", function(na_action) {
+    stats::lm(y ~ x1 + group, data = d_g, na.action = na_action)
+  }, function(m) d_g, twin = "group/na_factor", terms = "factor")
+  # The id and the time of the panel tests missing at rows the fit dropped
+  # only, which the tests do not read.
+  d_it <- d_na
+  d_it$id[3] <- NA
+  d_it$time[7] <- NA
+  exclude_pair("id_time", na_fit(d_it), function(m) d_it)
+  # z, the variable of a second formula, missing at a row the fit dropped.
+  exclude_pair("z", na_fit(d_zn), function(m) d_zn, twin = "variance/z_missing_dropped")
+  # A balanced panel, the fit dropping every row of a unit, in fit order and
+  # shuffled, and an unbalanced one, unit 1 at 5 of its 10 periods (N12).
+  exclude_pair("unit", na_fit(d_unit), function(m) d_unit, twin = "panel/unit_lm_full")
+  exclude_pair("unit_shuffled", na_fit(d_unit), function(m) d_unit[unit_perm, ],
+               twin = "panel/unit_lm_shuffled", form = "shuffled")
+  exclude_pair("half_unit", na_fit(d_half), function(m) d_half, twin = "panel/half_unit_full")
+
   # Classes of model. Those whose answer differs between the tests are run with
   # the data frame of the fit and in the other forms of data (class_forms()):
   # without `data`, with the same rows shuffled under their own row names, as a
@@ -666,9 +808,14 @@ context_cells <- function() {
   add(context_cell("class/rank_deficient", "class", function() {
     list(m = stats::lm(y ~ x1 + x2 + I(2 * x2), data = d), data = d)
   }, reference = "fit/ols/none/none/data_frame"))
-  add(context_cell("class/rlm", "class", function() {
-    list(m = MASS::rlm(y ~ x1 + x2, data = d), data = d)
-  }))
+  # A MASS::rlm() fit, an M-estimate whose residuals are not least-squares
+  # residuals, which every test built on the context tested as an lm until
+  # increment 11, and refuses since, before `data` is matched, on every form
+  # (R6, decision 4).
+  rlm_fit <- function() list(m = MASS::rlm(y ~ x1 + x2, data = d), data = d)
+  add(context_cell("class/rlm", "class", rlm_fit, expect = context_rlm_refusal, defect = "R6"))
+  class_forms("rlm", rlm_fit, expect = context_rlm_refusal, defect = "R6",
+              expect_tibble = context_rlm_refusal)
   # A Gaussian mgcv::gam() is a glm by class, and is accepted as before 0.16.0;
   # without smooth terms it is the lm.
   gam_fit <- function() list(m = mgcv::gam(y ~ x1 + x2, data = d), data = d)
@@ -698,14 +845,24 @@ context_cells <- function() {
   # either, and the group tests matched it by position too (N17).
   class_forms("gam_offset", gam_offset_fit, needs = "mgcv", defect = "gam_offset",
               shuffled_defect = "N17")
-  # A smooth term, usually penalised: the tests of increments 1 and 3 test the
-  # fit as before, and those of increment 2 refuse it until increment 11
-  # settles which tests take it ("gam"). Goldfeld-Quandt and the quantile
-  # regression test, which refitted the formula, stopped on its smooth term
-  # outside mgcv.
+  # A smooth term, penalised: the tests of increment 2 refused it ("gam",
+  # decision 23), and since increment 11 every test that fits the design
+  # again, or whose null distribution is that of the least-squares residuals
+  # of the design, refuses it, the others testing it on its basis (decision
+  # 37, context_refuse_penalised). Goldfeld-Quandt and the quantile regression
+  # test, which refitted the formula, stopped on its smooth term outside mgcv.
   gam_smooth_fit <- function() list(m = mgcv::gam(y ~ s(x1) + x2, data = d), data = d)
   add(context_cell("class/gam_smooth", "class", gam_smooth_fit, needs = "mgcv", defect = "gam"))
   class_forms("gam_smooth", gam_smooth_fit, needs = "mgcv", defect = "gam",
+              shuffled_defect = "N17")
+  # A fixed smooth, s(x1, fx = TRUE): the least-squares fit of its basis, which
+  # every test takes since increment 11, those that fit the design again
+  # included, with the value of the lm() of the basis (decision 38,
+  # context_basis_lm()); the tests of increment 2 refused it as a gam with
+  # smooth terms, and the bootstraps every gam.
+  gam_fixed_fit <- function() list(m = mgcv::gam(y ~ s(x1, fx = TRUE) + x2, data = d), data = d)
+  add(context_cell("class/gam_fixed", "class", gam_fixed_fit, needs = "mgcv", defect = "gam"))
+  class_forms("gam_fixed", gam_fixed_fit, needs = "mgcv", defect = "gam",
               shuffled_defect = "N17")
   # A zero weight leaves an observation out of the fit with a residual that is
   # not one: refused by every test but RESET, whose two weighted fits both
@@ -810,6 +967,79 @@ context_cells <- function() {
   cells
 }
 
+# The refusal of a MASS::rlm() fit by the model context (increment 11, R6,
+# decision 4), in the words every function built on it uses: the tests
+# "cannot test", fitWLS() "cannot refit" such a fit.
+context_rlm_refusal <- paste(
+  "a MASS::rlm() fit: an rlm fit is an M-estimate, whose residuals are not least-squares",
+  "residuals"
+)
+
+# Decision 37 (increment 11): the functions of the matrix that refuse a
+# penalised mgcv::gam() fit, those that fit its design again, the tests of
+# increment 2, the White and wild bootstraps, the robust Breusch-Pagan test,
+# which studentizes by default, and the variance form test, and those whose
+# null distribution is that of the least-squares residuals of the design,
+# Harrison-McCabe's and Szroeter's tests; with fitWLS() and the calls of a
+# second formula of the variance form test (context_cell_for_formula()). The
+# cells of a penalised gam, and the words of the refusal.
+context_refuse_penalised <- c(
+  "performStudentizedBPTest", "performRESETTest", "performGQTest",
+  "performQuantileRegressionTest", "performWhiteTestBootstrap", "performBPTestRobust",
+  "performWildBootstrapTest", "performHarrisonMcCabeTest", "performSzroeterTest",
+  "performVarianceFormTest"
+)
+context_penalised <- function(cell) grepl("^class/gam_smooth|^exclude/gam_smooth", cell$id)
+context_penalised_refusal <- "a penalised mgcv::gam() fit (s(x1))"
+
+# Decision 38 (increment 11): the oracle of a gam that is the least-squares fit
+# of its stored design, the lm() of its basis. The columns of the design but
+# the intercept, b1, b2, ..., are added to `data`, matched to the observations
+# by the row names of the model frame, and the lm is fitted to them with the
+# weights and the offset of the gam, so that its design is the basis, column
+# for column; a test gives the gam the value it gives this lm, to rounding.
+# With `fit_order = TRUE` the lm is fitted to the rows of `data` taken in the
+# order of the observations of the gam, so that its observations come in the
+# same order when `data` holds them in another (the shuffled data of a cell),
+# and a bootstrap draws the same replicates of both; `data` is returned in its
+# own order.
+context_basis_lm <- function(gam, data, fit_order = FALSE) {
+  frame <- stats::model.frame(gam)
+  basis <- stats::model.matrix(gam)
+  intercept <- colnames(basis) == "(Intercept)"
+  columns <- as.data.frame(basis[, !intercept, drop = FALSE])
+  names(columns) <- paste0("b", seq_len(ncol(columns)))
+  rows <- match(rownames(frame), rownames(data))
+  out <- data
+  for (k in names(columns)) {
+    out[[k]] <- NA_real_
+    out[[k]][rows] <- columns[[k]]
+  }
+  response <- names(frame)[1L]
+  f <- stats::as.formula(paste(response, "~", paste(names(columns), collapse = " + "),
+                               if (!any(intercept)) "- 1"))
+  environment(f) <- globalenv()
+  weights <- gam$prior.weights
+  out$.basis_w <- NA_real_
+  out$.basis_w[rows] <- weights
+  offset <- stats::model.offset(frame)
+  out$.basis_o <- 0
+  out$.basis_o[rows] <- if (is.null(offset)) 0 else offset
+  fitted_to <- if (fit_order) {
+    out[c(rows, setdiff(seq_len(nrow(out)), rows)), , drop = FALSE]
+  } else {
+    out
+  }
+  fit <- if (all(weights == 1) && is.null(offset)) {
+    eval(bquote(stats::lm(.(f), data = fitted_to)))
+  } else if (all(weights == 1)) {
+    eval(bquote(stats::lm(.(f), data = fitted_to, offset = .basis_o)))
+  } else {
+    eval(bquote(stats::lm(.(f), data = fitted_to, weights = .basis_w, offset = .basis_o)))
+  }
+  list(m = fit, data = out)
+}
+
 # Harrison-McCabe's statistic and its lower tail written out with the rank of
 # the fit, independently of the package (N4; decided 2026-10-18), from the
 # decomposition the fit itself made: the Pearson residuals of the fit, which
@@ -877,6 +1107,294 @@ context_rounded_cells <- c(
   "class/rank_deficient", "class/gam", "class/gam_offset_term", "class/gam_offset"
 )
 
+# Increment 10, B11 (decision 10): a grouped run, a grouped tibble given to
+# runHeteroTests(), refits the model within each group by evaluating its call
+# on the rows of the group. The call of a fitWLS() fit is that of the model it
+# refitted, without the weights it estimated, so each group was tested as the
+# unweighted fit; such a run is refused. The fits of the grouped matrix: an
+# lm, a weighted lm, whose weights are a column the refit of each group reads,
+# the fitWLS() fit of the lm, and the model as a formula; the groupings: one
+# column, `group` (four groups of 30), and two, `group` and `half` (eight of
+# 15).
+context_grouped_data <- function() {
+  d <- context_data()
+  d$half <- rep(1:2, each = nrow(d) / 2)
+  d
+}
+context_grouped_fits <- list(
+  lm = function(d) stats::lm(y ~ x1 + x2, data = d),
+  wls = function(d) stats::lm(y ~ x1 + x2, data = d, weights = w),
+  fitwls = function(d) fitWLS(stats::lm(y ~ x1 + x2, data = d), d),
+  formula = function(d) y ~ x1 + x2
+)
+context_groupings <- list(one = "group", two = c("group", "half"))
+context_grouped <- function(d, grouping) {
+  dplyr::group_by(dplyr::as_tibble(d), dplyr::across(dplyr::all_of(context_groupings[[grouping]])))
+}
+
+# Increment 10, N5: the runners refused the data a tidymodels workflow was
+# fitted to, whose engine names its response `..y` and its predictors as the
+# workflow's preprocessing made them, and the data of a parsnip fit made with
+# fit_xy(). They map them to the variables of the engine, by the workflow's
+# preprocessing, and test its model frame once the rows are confirmed, as
+# with `data = NULL`. The models of the matrix: workflows with a formula, with
+# transformed predictors and a factor, with a transformed outcome (a recipe
+# with step_log() of it, and a formula of log(y), decision 35), with a recipe
+# that transforms a predictor, fitted to data with missing values, with
+# variables, with case weights, and with a recipe that drops rows, by
+# step_naomit() and step_filter(), each skipped on new data (the default) or
+# not (from the review of increment 10); with a recipe that reorders the rows,
+# step_arrange() by a predictor and by another in descending order, which it
+# applies to new data; with a step skipped on new data that transformed the
+# outcome, step_log(ypos, skip = TRUE), the idiom recipes recommends; and
+# with case weights and a step_filter() applied to new data (from the second
+# review of increment 10); with a recipe written in a function, one of its
+# steps reading a variable of the function's frame, and a parsnip fit of
+# fit_xy() with case weights (from the third review); and parsnip fits of fit() (whose
+# data the runners took already) and of fit_xy(), with the outcome as a data
+# frame and as a vector (refused: the fit does not record its column).
+# `outcome` names the outcome of the data. The forms of data: none, the data
+# of the fit, as a tibble, shuffled under their own row names (refused for a
+# workflow: the engine's fit numbers its rows), and without the outcome
+# (refused).
+context_tidy_models <- function() {
+  d <- context_data()
+  d_na <- d
+  d_na$x2[c(3, 7, 11)] <- NA
+  d_cw <- d
+  d_cw$cw <- hardhat::importance_weights(d$w)
+  spec <- function() parsnip::linear_reg()
+  wf <- function(pre, data) workflows::fit(workflows::add_model(pre, spec()), data = data)
+  with_recipe <- function(rec, data) wf(workflows::add_recipe(workflows::workflow(), rec), data)
+  list(
+    wf_formula = list(data = d, outcome = "y", fit = function(data) {
+      wf(workflows::add_formula(workflows::workflow(), y ~ x1 + x2), data)
+    }),
+    wf_terms = list(data = d, outcome = "y", fit = function(data) {
+      wf(workflows::add_formula(workflows::workflow(), y ~ log(x1) + group), data)
+    }),
+    wf_recipe = list(data = d, outcome = "y", fit = function(data) {
+      with_recipe(recipes::step_log(recipes::recipe(y ~ x1 + x2, data = data), x1), data)
+    }),
+    wf_recipe_outcome = list(data = d, outcome = "ypos", fit = function(data) {
+      with_recipe(recipes::step_log(recipes::recipe(ypos ~ x1 + x2, data = data), ypos), data)
+    }),
+    wf_formula_outcome = list(data = d, outcome = "ypos", fit = function(data) {
+      wf(workflows::add_formula(workflows::workflow(), log(ypos) ~ x1 + x2), data)
+    }),
+    wf_missing = list(data = d_na, outcome = "y", fit = function(data) {
+      wf(workflows::add_formula(workflows::workflow(), y ~ x1 + x2), data)
+    }),
+    wf_variables = list(data = d, outcome = "y", fit = function(data) {
+      wf(workflows::add_variables(workflows::workflow(), outcomes = y, predictors = c(x1, x2)),
+         data)
+    }),
+    wf_case_weights = list(data = d_cw, outcome = "y", fit = function(data) {
+      pre <- workflows::add_case_weights(
+        workflows::add_formula(workflows::workflow(), y ~ x1 + x2), cw
+      )
+      wf(pre, data)
+    }),
+    wf_naomit = list(data = d_na, outcome = "y", fit = function(data) {
+      rec <- recipes::step_naomit(recipes::recipe(y ~ x1 + x2, data = data),
+                                  recipes::all_predictors())
+      with_recipe(rec, data)
+    }),
+    wf_naomit_applied = list(data = d_na, outcome = "y", fit = function(data) {
+      rec <- recipes::step_naomit(recipes::recipe(y ~ x1 + x2, data = data),
+                                  recipes::all_predictors(), skip = FALSE)
+      with_recipe(rec, data)
+    }),
+    wf_filter = list(data = d, outcome = "y", fit = function(data) {
+      with_recipe(recipes::step_filter(recipes::recipe(y ~ x1 + x2, data = data), x1 > 0.7), data)
+    }),
+    wf_filter_applied = list(data = d, outcome = "y", fit = function(data) {
+      rec <- recipes::step_filter(recipes::recipe(y ~ x1 + x2, data = data), x1 > 0.7,
+                                  skip = FALSE)
+      with_recipe(rec, data)
+    }),
+    wf_arrange = list(data = d, outcome = "y", fit = function(data) {
+      with_recipe(recipes::step_arrange(recipes::recipe(y ~ x1 + x2, data = data), x1), data)
+    }),
+    wf_arrange_desc = list(data = d, outcome = "y", fit = function(data) {
+      rec <- recipes::step_arrange(recipes::recipe(y ~ x1 + x2, data = data), dplyr::desc(x2))
+      with_recipe(rec, data)
+    }),
+    wf_outcome_skipped = list(data = d, outcome = "ypos", fit = function(data) {
+      rec <- recipes::step_log(recipes::recipe(ypos ~ x1 + x2, data = data), ypos, skip = TRUE)
+      with_recipe(rec, data)
+    }),
+    wf_filter_case_weights = list(data = d_cw, outcome = "y", fit = function(data) {
+      rec <- recipes::step_filter(recipes::recipe(y ~ x1 + x2 + cw, data = data), x1 > 0.7,
+                                  skip = FALSE)
+      pre <- workflows::add_case_weights(workflows::add_recipe(workflows::workflow(), rec), cw)
+      wf(pre, data)
+    }),
+    # A recipe written in a function whose frame holds other objects, a step
+    # reading a variable of it (the third review of increment 10).
+    wf_local_variable = list(data = d, outcome = "y", fit = function(data) {
+      k <- 3
+      unused <- seq_len(1e5) + 0.5
+      rec <- recipes::step_mutate(recipes::recipe(y ~ x1 + x2, data = data), x3 = x1 * k)
+      with_recipe(rec, data)
+    }),
+    parsnip_formula = list(data = d, outcome = "y", fit = function(data) {
+      parsnip::fit(spec(), y ~ x1 + x2, data = data)
+    }),
+    parsnip_xy = list(data = d, outcome = "y", fit = function(data) {
+      parsnip::fit_xy(spec(), x = data[, c("x1", "x2")], y = data[, "y", drop = FALSE])
+    }),
+    parsnip_xy_vector = list(data = d, outcome = "y", fit = function(data) {
+      parsnip::fit_xy(spec(), x = data[, c("x1", "x2")], y = data$y)
+    }),
+    parsnip_xy_weights = list(data = d, outcome = "y", fit = function(data) {
+      parsnip::fit_xy(spec(), x = data[, c("x1", "x2")], y = data[, "y", drop = FALSE],
+                      case_weights = hardhat::importance_weights(data$w))
+    })
+  )
+}
+context_tidy_forms <- c("null", "data_frame", "tibble", "shuffled", "lacking")
+context_tidy_data <- function(model, form) {
+  set.seed(3)
+  switch(form,
+    null = NULL,
+    data_frame = model$data,
+    tibble = dplyr::as_tibble(model$data),
+    shuffled = model$data[sample(nrow(model$data)), ],
+    lacking = model$data[, setdiff(names(model$data), model$outcome)],
+    stop("unknown form: ", form)
+  )
+}
+# What each model of the tidy matrix gives on a form of data with `data`: the
+# value of the call without `data`, or a refusal: "guard" (the class of the
+# guard), or a regular expression of the message.
+context_tidy_expect <- function(name, form) {
+  if (identical(form, "null")) {
+    return("value")
+  }
+  if (identical(name, "parsnip_xy_vector")) {
+    return("the fit does not record the column of its outcome")
+  }
+  if (identical(form, "lacking")) {
+    return(if (identical(name, "parsnip_formula")) {
+      "missing from input data"
+    } else if (startsWith(name, "parsnip")) {
+      "`data` lacks the outcome `y` of the fit too"
+    } else {
+      "the workflow's preprocessing cannot map `data` to them"
+    })
+  }
+  # A step that drops rows at the fit only numbers the rows it kept afresh;
+  # those of step_naomit() are found again, the rows of `data` complete in the
+  # variables of the engine, and those of step_filter() are not.
+  if (identical(name, "wf_filter")) {
+    return("dropped rows at the fit only")
+  }
+  # fit_xy() takes its case weights as a vector and does not record their
+  # column (the third review of increment 10).
+  if (identical(name, "parsnip_xy_weights")) {
+    return("cannot compare the case weights of a parsnip fit made with fit_xy()")
+  }
+  # A recipe that sorts the rows of new data sorts them as it sorted the data
+  # it was fitted to, whatever their order: the rows are those of the fit.
+  if (name %in% c("wf_arrange", "wf_arrange_desc")) {
+    return("value")
+  }
+  if (identical(form, "shuffled") && !identical(name, "parsnip_formula") &&
+        !identical(name, "parsnip_xy")) {
+    return("guard")
+  }
+  # The outcome a skipped step transformed at the fit (from the second review
+  # of increment 10, where the refusal advised to pass these very data).
+  if (identical(name, "wf_outcome_skipped")) {
+    return("the workflow's preprocessing has a step it skips on new data, step_log()")
+  }
+  "value"
+}
+
+# What augment() of the result of the runner without `data` gives on a form
+# of data: what the runner gives, but for a preprocessing that does not say
+# which row of `data` each observation comes from, one that drops rows of new
+# data or reorders them, and for the data of a parsnip fit of fit() without
+# its outcome, whose refusal names augment().
+context_tidy_augment_expect <- function(name, form) {
+  expect <- context_tidy_expect(name, form)
+  if (identical(expect, "value") && !identical(form, "null")) {
+    if (name %in% c("wf_naomit_applied", "wf_filter_applied", "wf_filter_case_weights")) {
+      return("augment() cannot tell which rows of `data` hold the observations")
+    }
+    if (name %in% c("wf_arrange", "wf_arrange_desc")) {
+      return("reorders the rows of `data` it maps")
+    }
+  }
+  if (identical(name, "parsnip_formula") && identical(form, "lacking")) {
+    return("augment() matches the rows of `data` to the observations of the fit")
+  }
+  expect
+}
+
+# Does augment() of a tidymodels object bind each row of `data` its own
+# values? For each row of `bound` at the positions `at`, the row of `data` it
+# is named after, alone: for a workflow, mapped by its preprocessing
+# (hardhat::forge() of that row) and predicted by its engine; for a parsnip
+# fit, predicted by the fit. Its .fitted must be that prediction, and its
+# .resid its outcome, as the preprocessing makes it, less that prediction, to
+# 1e-8 (from the second review of increment 10: the checks compared the
+# values bound with those of the model frame in their order, and a recipe that
+# reorders the rows passed them). The prediction of a workflow itself
+# (predict.workflow()) maps the predictors without the outcome, which a
+# recipe that transforms the outcome on new data cannot bake. A row whose
+# prediction or outcome cannot be computed, as in data without the outcome,
+# is not its own: FALSE, so that the identity harness records the value
+# augment() gave, and not the error of this check.
+context_tidy_own <- function(object, data, bound, at = seq_len(nrow(bound))) {
+  plain <- as.data.frame(data)
+  index <- match(rownames(bound), rownames(plain))
+  if (anyNA(index[at])) {
+    return(FALSE)
+  }
+  workflow <- inherits(object, "workflow")
+  engine <- if (workflow) workflows::extract_fit_engine(object) else object$fit
+  blueprint <- if (workflow) workflows::extract_mold(object)$blueprint
+  close <- function(a, b) length(a) == 1L && length(b) == 1L && isTRUE(all.equal(
+    unname(as.numeric(a)), unname(as.numeric(b)), tolerance = 1e-8
+  ))
+  all(vapply(at, function(k) tryCatch({
+    row <- data[index[k], , drop = FALSE]
+    if (workflow) {
+      forged <- hardhat::forge(row, blueprint, outcomes = TRUE)
+      predictors <- as.data.frame(forged$predictors)
+      predictors[["(Intercept)"]] <- NULL
+      prediction <- stats::predict(engine, newdata = predictors)
+      outcome <- forged$outcomes[[1L]]
+    } else {
+      prediction <- stats::predict(object, new_data = row)$.pred
+      outcome <- if (is.character(object$preproc$y_var) && length(object$preproc$y_var) == 1L) {
+        row[[object$preproc$y_var]]
+      } else {
+        stats::model.response(stats::model.frame(stats::formula(engine), as.data.frame(row)))
+      }
+    }
+    close(bound$.fitted[k], prediction) && close(bound$.resid[k], outcome - prediction)
+  }, error = function(e) FALSE), logical(1)))
+}
+# A few rows of `n`, for the tests: the first three, the middle and the last
+# two.
+context_tidy_rows <- function(n) unique(pmin(c(1L, 2L, 3L, n %/% 2L, n - 1L, n), n))
+# Does `x` hold a fitted model or a fitted workflow anywhere in its lists?
+# The record the runners keep for augment() (rtidymodels_map()) holds the
+# blueprint of the workflow and no fit (decision 36, the fourth review of
+# increment 10).
+context_holds_fit <- function(x, depth = 0L) {
+  if (inherits(x, c("workflow", "model_fit", "lm", "glm"))) {
+    return(TRUE)
+  }
+  if (depth > 12L || !is.list(x) || is.data.frame(x)) {
+    return(FALSE)
+  }
+  any(vapply(x, context_holds_fit, logical(1), depth = depth + 1L))
+}
+
 # The cells run on CRAN: no package beyond the hard dependencies, and a few of
 # each block.
 context_cran_cells <- c(
@@ -884,7 +1402,11 @@ context_cran_cells <- c(
   "fit/ols/none/none/model_frame", "fit/wls/none/none/null", "fit/ols/argument/none/null",
   "terms/ols/none/log/null", "missing/complete_renumbered", "missing/median_full",
   "subset/data_frame", "ident/front", "class/mlm", "group/na_shuffled",
-  "panel/unit_lm_shuffled", "panel/repeated_id_time"
+  "panel/unit_lm_shuffled", "panel/repeated_id_time",
+  # Increment 11: a MASS::rlm() fit (MASS is imported), refused by every test;
+  # a penalised gam and a gam with a fixed smooth (mgcv, a recommended package
+  # R ships with, skipped where it is not installed), decisions 37 and 38.
+  "class/rlm", "class/gam_smooth", "class/gam_fixed"
 )
 
 # Whether the full matrix runs, or only the cells CRAN runs. The full matrix
@@ -976,6 +1498,19 @@ context_streaming <- c(
   "performWhiteTestStreaming", "performBPTestStreaming", "performKoenkerTestStreaming"
 )
 context_migrated <- c(context_migrated, context_streaming)
+# Increment 8: the resampling tests, the White bootstrap, whose observed
+# statistic and replicates are computed on the stored design, and the wild
+# bootstrap, whose replicates already were, with `B = 19`; and the robust White
+# and Breusch-Pagan tests, which prepared `data` themselves until then. Their
+# replicates are drawn in the order of the fit, so their value on every form of
+# data they accept is that of the data frame of the fit. bootstrapTestStatistic()
+# draws them in the order of `data`, and has tests of its own
+# (test-model-context.R).
+context_resampling <- c(
+  "performWhiteTestBootstrap", "performWildBootstrapTest", "performWhiteTestRobust",
+  "performBPTestRobust"
+)
+context_migrated <- c(context_migrated, context_resampling)
 context_streaming_recipes <- function() {
   list(
     `performWhiteTestStreaming(chunk_size = 7)` = function(m, d) {
@@ -994,22 +1529,18 @@ context_streaming_chunked <- names(context_streaming_recipes())
 # The terms whose squares, or whose products with each other, are collinear
 # with the terms of White's auxiliary regression: the square of a dummy is the
 # dummy, that of the first column of an orthogonal poly() basis a combination
-# of the intercept and the basis, and that of x1 is I(x1^2). White's
-# streaming test stops on them ("Auxiliary regression became rank deficient"),
-# as before 0.16.0, where performWhiteTest() drops the collinear columns (N3,
-# a pull request of its own, decision 22).
+# of the intercept and the basis, and that of x1 is I(x1^2). Up to 0.16.0
+# White's streaming test stopped on them ("Auxiliary regression became rank
+# deficient"), where performWhiteTest() drops the collinear columns; since the
+# pull request of N3 (0.17.0, decision 22) it drops them too, and on these
+# cells gives the value of the reference of the cell, as on the others, and
+# that of performWhiteTest() (test-model-context.R).
 context_white_streaming_collinear <- c("poly", "square", "median", "cut", "factor", "log_factor")
 
 # The cell as the streaming tests see it. They read no column of `data`
-# beyond the model frame, so the generic rules of the cell apply; White's
-# test stops on the collinear terms of its auxiliary regression.
+# beyond the model frame, so the generic rules of the cell apply, White's
+# test on the collinear terms of its auxiliary regression among them (N3).
 context_cell_for_streaming <- function(fn, cell) {
-  white <- startsWith(fn, "performWhiteTestStreaming")
-  if (white && identical(cell$expect, "value") &&
-        cell$terms %in% context_white_streaming_collinear) {
-    cell$expect <- "Auxiliary regression became rank deficient"
-    cell$reference <- NULL
-  }
   cell
 }
 
@@ -1132,14 +1663,6 @@ context_cell_for_panel <- function(fn, cell) {
     cell$reference <- NULL
     return(cell)
   }
-  # A fit with na.exclude is read as before until its step of the model
-  # context, with its padded residuals: the statistic of a panel test or the
-  # correlations of the scatter diagnostic are NA, or computed with the NA.
-  if (identical(cell$id, "missing/na_exclude")) {
-    cell$expect <- "value"
-    cell$reference <- NULL
-    return(cell)
-  }
   if (!identical(cell$expect, "value")) {
     return(cell)
   }
@@ -1196,8 +1719,9 @@ context_runnable <- function(fns = context_migrated) {
 #   terms (context_increment2), once `data` is matched: a shuffled tibble is
 #   refused by the guard first, by RESET too since it matches `data`
 #   (decision 31).
-# - The quantile regression test refuses a weighted fit, and a MASS::rlm()
-#   fit, whose weights it reads, once `data` is aligned.
+# - The quantile regression test refuses a weighted fit once `data` is
+#   aligned. It refused a MASS::rlm() fit so too, whose case weights it read,
+#   until the context refused that fit first (increment 11).
 # - Goldfeld-Quandt, Glejser, Park, Szroeter and Harrison-McCabe read `x1`,
 #   which the model frame of a fit that transforms `x1` does not hold, and
 #   Hartley's test and the five group tests `group`, which only the models
@@ -1212,17 +1736,23 @@ context_runnable <- function(fns = context_migrated) {
 #   before.
 # - RESET and the tests computed from the model alone read nothing from
 #   `data`, which they match as the others do (decision 31), and keep their
-#   own refusals (context_cell_for_model_alone()): RESET stops on the padded
-#   fitted values of na.exclude (increment 9) and accepts a zero weight.
+#   own refusals (context_cell_for_model_alone()): RESET accepts a zero
+#   weight.
 # - The functions of increment 5 read `id`, `time` or the variables of the
 #   scatter diagnostic beside the model (context_cell_for_panel()): without
 #   `data` the panel tests are refused (M1) and the others need a data frame;
 #   the model frame lacks `id` and `time`; Pesaran's test refuses a repeated
 #   pair of `id` and `time` (R2), and since the pull request of N12 gives a
 #   value on an unbalanced panel, as that of a fit that dropped rows of some
-#   units, which the fifth step refused; and a fit with na.exclude is read as
-#   before.
+#   units, which the fifth step refused.
+# - A fit with na.exclude gives what its twin gives (increment 9, B13).
 context_cell_for <- function(fn, cell) {
+  # A fit with na.exclude (increment 9, B13) gives what its twin, the same fit
+  # with na.omit, gives, value or refusal (context_check_matrix()): its
+  # reference is the twin, whatever the test.
+  if (!is.null(cell$twin)) {
+    return(cell)
+  }
   # The streaming tests (increment 7), in chunks of 10,000 or of 7.
   if (fn %in% c(context_streaming, context_streaming_chunked)) {
     return(context_cell_for_streaming(fn, cell))
@@ -1233,12 +1763,20 @@ context_cell_for <- function(fn, cell) {
   if (fn %in% context_second_formula) {
     return(context_cell_for_formula(fn, cell))
   }
-  if (fn %in% context_increment2 && startsWith(cell$id, "class/gam_smooth") &&
+  # Decision 37 (increment 11): the tests that fit the design of a penalised
+  # gam again, or whose null distribution is that of the least-squares
+  # residuals of the design, refuse it once `data` is matched; the others test
+  # it on its basis. A gam that is the least-squares fit of its basis, without
+  # smooth terms or with fixed ones, is tested by every test (decision 38): the
+  # wild bootstrap, which stopped on every gam reading its leverages with
+  # hatvalues(), reads them from its stored design.
+  if (fn %in% context_refuse_penalised && context_penalised(cell) &&
         !identical(cell$expect, "guard")) {
-    cell$expect <- "cannot test an mgcv::gam() fit with smooth terms (s(x1))"
+    cell$expect <- context_penalised_refusal
+    cell$reference <- NULL
     return(cell)
   }
-  weighted <- cell$fit %in% c("wls", "wvec", "glm", "fitwls") || identical(cell$id, "class/rlm")
+  weighted <- cell$fit %in% c("wls", "wvec", "glm", "fitwls")
   if (identical(fn, "performQuantileRegressionTest") && weighted &&
         !identical(cell$expect, "guard")) {
     cell$expect <- "does not support weighted fits"
@@ -1307,10 +1845,17 @@ context_cell_for_formula <- function(fn, cell) {
   variance_form <- startsWith(fn, "performVarianceFormTest")
   edited <- grepl("does not reproduce its residuals", cell$expect, fixed = TRUE)
   zero_weight <- identical(cell$expect, "zero or non-finite weights")
-  # fitWLS() refits a rank-deficient fit with its aliased coefficient, and a
-  # fit with na.exclude from its residuals without the padding: values of
-  # their own.
-  if (wls && cell$id %in% c("class/rank_deficient", "missing/na_exclude")) {
+  # Decision 37 (increment 11): fitWLS() and the variance form test refit a
+  # penalised gam by weighted least squares, and refuse it once `data` is
+  # matched, before they read a variable of the second formula.
+  if ((wls || variance_form) && context_penalised(cell) && !identical(cell$expect, "guard")) {
+    cell$expect <- context_penalised_refusal
+    cell$reference <- NULL
+    return(cell)
+  }
+  # fitWLS() refits a rank-deficient fit with its aliased coefficient: a value
+  # of its own.
+  if (wls && identical(cell$id, "class/rank_deficient")) {
     cell$expect <- "value"
     cell$reference <- NULL
     return(cell)
@@ -1326,8 +1871,7 @@ context_cell_for_formula <- function(fn, cell) {
     cell$expect <- "value"
     cell$reference <- if (identical(cell$form, "shuffled")) cell$base
   }
-  weighted <- cell$fit %in% c("wls", "wvec", "glm") || identical(cell$id, "class/rlm") ||
-    startsWith(cell$id, "class/zero_weight")
+  weighted <- cell$fit %in% c("wls", "wvec", "glm") || startsWith(cell$id, "class/zero_weight")
   if (variance_form && !identical(cell$expect, "guard")) {
     value_like <- cell$expect %in% c("value", "zero or non-finite weights")
     if (weighted && value_like) {
@@ -1378,20 +1922,13 @@ context_cell_for_formula <- function(fn, cell) {
 # names of the fit, and gave the value of the fit on the data the guard
 # refuses. Each keeps the refusals of its own, once `data` is matched: RESET
 # accepts a zero weight, which the others refuse with the Pearson residuals,
-# and refuses a gam with smooth terms (decision 23) and the padded fitted
-# values of na.exclude, which the spread-level and Davidian-Carroll tests
-# take, and the others refuse with the checks of the model; the variance form
-# test refuses weights that did not come from fitWLS().
+# and refuses a gam with smooth terms (decision 23); the variance form test
+# refuses weights that did not come from fitWLS(). Until increment 9 RESET
+# stopped on the padded fitted values of a fit with na.exclude, which the
+# spread-level and Davidian-Carroll tests took, and the others refused with
+# the checks of the model; such a fit now gives what its twin gives.
 context_cell_for_model_alone <- function(fn, cell) {
   if (identical(cell$expect, "guard")) {
-    return(cell)
-  }
-  if (identical(cell$id, "missing/na_exclude")) {
-    if (identical(fn, "performRESETTest")) {
-      cell$expect <- "NA/NaN/Inf in 'x'"
-    } else if (fn %in% c("performSpreadLevelTest", "performDavidianCarrollTest")) {
-      cell$expect <- "value"
-    }
     return(cell)
   }
   zero_weight <- startsWith(cell$id, "class/zero_weight")
@@ -1399,13 +1936,29 @@ context_cell_for_model_alone <- function(fn, cell) {
     cell$expect <- "value"
     return(cell)
   }
-  weighted <- cell$fit %in% c("wls", "wvec", "glm") || identical(cell$id, "class/rlm")
+  weighted <- cell$fit %in% c("wls", "wvec", "glm")
   if (identical(fn, "performVarianceFormTest") && weighted &&
         (identical(cell$expect, "value") || zero_weight)) {
     cell$expect <- "was fitted with weights that did not come from fitWLS()"
     cell$reference <- NULL
   }
   cell
+}
+
+# What a call gives on a fit with na.exclude, from what it gives on its twin,
+# the same fit with na.omit (increment 9, B13): the same value, but for an
+# output with one value per row, padded with NA at the rows the fit dropped, as
+# naresid() pads residuals() and weights(). Of the calls of the matrix, the
+# fitWLS() recipes return one, the vector of the coefficients and the weights
+# of the fit (context_recipes()); the tests return none.
+context_twin_value <- function(fn, twin_value, cell) {
+  if (!startsWith(fn, "fitWLS") || !is.numeric(twin_value)) {
+    return(twin_value)
+  }
+  m <- suppressWarnings(suppressMessages(cell$build()))$m
+  n <- length(m$residuals)
+  k <- length(twin_value) - n
+  c(twin_value[seq_len(k)], unname(stats::naresid(m$na.action, twin_value[k + seq_len(n)])))
 }
 
 # A cell run through one test: the result, or the error as a condition.

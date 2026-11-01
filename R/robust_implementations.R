@@ -36,15 +36,18 @@ NULL
 #' intervals, effect size reporting, and power analysis.
 #'
 #' @inheritParams performWhiteTest
-#' @param data A [base::data.frame] (or object coercible to one) containing the
-#'   variables referenced by `model`. It must include the observations used to
-#'   fit `model` and will be checked for missing values.
-#'   When `NULL`, the default, the model frame of `model` is used. It holds the
-#'   terms of the model rather than its variables (`log(x)` rather than `x`), so
-#'   a model that transforms a variable needs `data`, as does a
-#'   model with an `offset()` term, and so may a fit whose `weights` or `offset`
-#'   argument is a column of the data, which the model frame holds as
-#'   `(weights)` or `(offset)`.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default.
+#'   The response, design, weights and offset are read from the fit itself, so
+#'   a model that transforms its variables, has an `offset()` term, or takes
+#'   its `weights` or `offset` from a column of the data needs no `data`, and
+#'   the model frame of `model` is accepted as `data` (since 0.17.0; before,
+#'   such models needed `data`). Data that are given are matched to the
+#'   observations of the fit: rows with row names of their own by name, in any
+#'   order; rows that only number themselves (a tibble, a data.table, a data
+#'   frame whose row names were reset) by the row numbers of the fit, or in the
+#'   order of the fit when they hold one row per observation. The rows the fit
+#'   dropped may be there or not. Data whose rows cannot be shown to hold the
+#'   observations of the fit are refused; see [test_results].
 #' @param method Character string selecting the auxiliary specification.
 #'   "standard" retains squares and cross-products, while "reduced"
 #'   excludes cross-products for high-dimensional designs.
@@ -87,8 +90,16 @@ NULL
 #' the value of the same model fitted without the aliased columns. It refuses a
 #' `glm` of another family or link, a `survey::svyglm()` fit, a fit with a zero
 #' weight, a coefficient that is not finite for another reason, and `data` that
-#' lack rows or variables of the fit. Which model each test accepts, and why, is
-#' set out in [test_results], under *Supported models*.
+#' lack rows or variables of the fit. An `mgcv::gam()` fit with penalised
+#' smooth terms is tested on its design, the basis of its smooths, as by
+#' [performWhiteTest()], and refused with `bootstrap = TRUE` (since 0.17.0;
+#' before, the bootstrap refused every `gam` with an error of its own): each
+#' replicate fits that design again by least squares, which a penalised fit is
+#' not. A `gam` that is the least-squares fit of its design, as one whose
+#' smooth terms are all fixed (`s(x, fx = TRUE)`) or one without smooth terms,
+#' is bootstrapped too, as the `lm()` of that design (decisions 37 and 38 of
+#' the design of the model context). Which model each test accepts, and why,
+#' is set out in [test_results], under *Supported models*.
 #'
 #' @examples
 #' data(mtcars)
@@ -103,8 +114,15 @@ NULL
 performWhiteTestRobust <- function(model, data = NULL, method = c("standard", "reduced"),
                                    bootstrap = FALSE, B = 999, ci_level = 0.95,
                                    parallel = FALSE) {
-  rrefuse_non_gaussian_glm(model, "performWhiteTestRobust")
-  data <- rdata_or_model_frame(model, data)
+  fn <- "performWhiteTestRobust"
+  test_label <- "White (robust)"
+  rrefuse_non_gaussian_glm(model, fn)
+  # The response, design, weights, offset and residuals come from the fit;
+  # `data`, when given, is matched to its observations and checked
+  # (R/model_context.R). Before increment 8 of the model context the test
+  # prepared `data`, or the model frame, itself, and a model that transforms
+  # a variable, or has an offset() term, needed `data`.
+  ctx <- rmodel_context(model, data, fn = fn, test_label = test_label)
   method <- match.arg(method)
 
   if (!is.logical(bootstrap) || length(bootstrap) != 1L || is.na(bootstrap)) {
@@ -125,28 +143,28 @@ performWhiteTestRobust <- function(model, data = NULL, method = c("standard", "r
     stop("`parallel` must be a single logical value.", call. = FALSE)
   }
 
-  model_terms <- stats::terms(model)
-  required_vars <- unique(all.vars(model_terms))
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = "White (robust)",
-    min_obs_model = 20L,
-    min_obs_data = 20L,
-    allow_aliased = TRUE
-  )
-  working_data <- prepared$data
+  # The bootstrap refits each replicate by least squares: a penalised
+  # mgcv::gam() fit is refused here, under the name of this test, as by
+  # bootstrapTestStatistic() (decision 37 of the design of the model context).
+  if (isTRUE(bootstrap)) {
+    rrefuse_penalised_gam(ctx, fn, "replicate")
+  }
+  rvalidateModelInputs(model, test_name = test_label, min_obs = 20L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
+  rwarn_incomplete_rows(data, model)
+  # A zero weight is refused here, as before.
+  rcontext_pearson(ctx)
+  # The rows of `data` that hold the observations, in the order of the fit
+  # and under the names of its observations, or the model frame: what the
+  # checks below read, and what the base statistic and the bootstrap are
+  # given.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements("white", model = model, data = working_data)
   rprocessValidationResult(requirements)
 
   cross_products <- identical(method, "standard")
-  base_result <- performWhiteTest(
-    model,
-    rdata_with_fit_rows(working_data, names(prepared$residuals)),
-    cross_products = cross_products
-  )
+  base_result <- performWhiteTest(model, working_data, cross_products = cross_products)
 
   df <- .extract_df(base_result, model)
   ci_info <- list(
@@ -211,15 +229,18 @@ performWhiteTestRobust <- function(model, data = NULL, method = c("standard", "r
 #' diagnostics.
 #'
 #' @inheritParams performBPTest
-#' @param data A [base::data.frame] (or compatible object) containing the
-#'   variables referenced in `model`. The data must include all observations used
-#'   to fit `model` and should not contain unresolved missing values.
-#'   When `NULL`, the default, the model frame of `model` is used. It holds the
-#'   terms of the model rather than its variables (`log(x)` rather than `x`), so
-#'   a model that transforms a variable needs `data`, as does a
-#'   model with an `offset()` term, and so may a fit whose `weights` or `offset`
-#'   argument is a column of the data, which the model frame holds as
-#'   `(weights)` or `(offset)`.
+#' @param data The data frame `model` was fitted to, or `NULL`, the default.
+#'   The response, design, weights and offset are read from the fit itself, so
+#'   a model that transforms its variables, has an `offset()` term, or takes
+#'   its `weights` or `offset` from a column of the data needs no `data`, and
+#'   the model frame of `model` is accepted as `data` (since 0.17.0; before,
+#'   such models needed `data`). Data that are given are matched to the
+#'   observations of the fit: rows with row names of their own by name, in any
+#'   order; rows that only number themselves (a tibble, a data.table, a data
+#'   frame whose row names were reset) by the row numbers of the fit, or in the
+#'   order of the fit when they hold one row per observation. The rows the fit
+#'   dropped may be there or not. Data whose rows cannot be shown to hold the
+#'   observations of the fit are refused; see [test_results].
 #' @param studentize Logical, use studentized residuals for the auxiliary
 #'   regression (Koenker variant)? Defaults to `TRUE`. The name matches
 #'   `lmtest::bptest()` and [performHarveyTest()].
@@ -255,10 +276,17 @@ performWhiteTestRobust <- function(model, data = NULL, method = c("standard", "r
 #' `studentize = FALSE`, and since 0.16.0 with `studentize = TRUE`, the default,
 #' whose refit of the design carries the offset of the fit.
 #' It refuses a multivariate `lm` ("needs a model with one response"), and,
-#' since 0.16.0, an `mgcv::gam()` fit with smooth terms: a smooth term is
-#' usually penalised, and a penalised fit is not the least-squares fit of the
-#' design the test fits again. A later step settles which tests take such a
-#' fit; a `gam` without smooth terms is tested as the Gaussian `glm` it is.
+#' since 0.16.0, with `studentize = TRUE`, the default, an `mgcv::gam()` fit
+#' with penalised smooth terms, which is not the least-squares fit of its
+#' design, the basis of its smooths, that the studentized statistic fits again,
+#' and, since 0.17.0, such a fit with `bootstrap = TRUE`, whose replicates are
+#' fitted again. With `studentize = FALSE` and no bootstrap it tests such a fit
+#' on its design, as `performBPTest()` does. Since 0.17.0 a `gam` that is the
+#' least-squares fit of its design, as one whose smooth terms are all fixed
+#' (`s(x, fx = TRUE)`), is tested on that design and gives the value of the
+#' `lm()` of it; before, it was refused as a penalised one. A `gam` without
+#' smooth terms is tested as the Gaussian `glm` it is (decisions 37 and 38 of
+#' the design of the model context).
 #' Which model each
 #' test accepts, and why, is set out in [test_results], under *Supported models*.
 #'
@@ -275,8 +303,15 @@ performWhiteTestRobust <- function(model, data = NULL, method = c("standard", "r
 performBPTestRobust <- function(model, data = NULL, studentize = TRUE,
                                 bootstrap = FALSE, B = 999, ci_level = 0.95,
                                 parallel = FALSE, studentized) {
-  rrefuse_non_gaussian_glm(model, "performBPTestRobust")
-  data <- rdata_or_model_frame(model, data)
+  fn <- "performBPTestRobust"
+  test_label <- "Breusch-Pagan (robust)"
+  rrefuse_non_gaussian_glm(model, fn)
+  # The response, design, weights, offset and residuals come from the fit;
+  # `data`, when given, is matched to its observations and checked
+  # (R/model_context.R). Before increment 8 of the model context the test
+  # prepared `data`, or the model frame, itself, and a model that transforms
+  # a variable, or has an offset() term, needed `data`.
+  ctx <- rmodel_context(model, data, fn = fn, test_label = test_label)
   if (!missing(studentized)) {
     if (!missing(studentize)) {
       stop("Supply `studentize` only; `studentized` is its deprecated name.", call. = FALSE)
@@ -313,24 +348,28 @@ performBPTestRobust <- function(model, data = NULL, studentize = TRUE,
     stop("`parallel` must be a single logical value.", call. = FALSE)
   }
 
-  model_terms <- stats::terms(model)
-  required_vars <- unique(all.vars(model_terms))
-  prepared <- prepare_model_data_for_test(
-    model,
-    data,
-    required_vars = required_vars,
-    test_label = "Breusch-Pagan (robust)",
-    min_obs_model = 15L,
-    min_obs_data = 15L,
-    allow_aliased = TRUE
-  )
-  working_data <- prepared$data
+  # The bootstrap refits each replicate by least squares: a penalised
+  # mgcv::gam() fit is refused here, under the name of this test, as by
+  # bootstrapTestStatistic() (decision 37 of the design of the model context).
+  if (isTRUE(bootstrap)) {
+    rrefuse_penalised_gam(ctx, fn, "replicate")
+  }
+  rvalidateModelInputs(model, test_name = test_label, min_obs = 15L, allow_aliased = TRUE)
+  rvalidate_model_context(ctx)
+  rwarn_incomplete_rows(data, model)
+  # A zero weight is refused here, as before.
+  rcontext_pearson(ctx)
+  # The rows of `data` that hold the observations, in the order of the fit
+  # and under the names of its observations, or the model frame: what the
+  # checks below read, and what the base statistic and the bootstrap are
+  # given.
+  working_data <- rcontext_rows(ctx, data)
 
   requirements <- rvalidateTestRequirements("breusch_pagan", model = model, data = working_data)
   rprocessValidationResult(requirements)
 
   base_fun <- if (studentize) .studentized_bp_test else performBPTest
-  base_result <- base_fun(model, rdata_with_fit_rows(working_data, names(prepared$residuals)))
+  base_result <- base_fun(model, working_data)
 
   df <- .extract_df(base_result, model)
   ci_info <- list(
@@ -578,6 +617,12 @@ rvalidate_against_reference <- function(test_name, model, data, tolerance = 1e-6
     tolerance <- 1e-6
   }
 
+  # The reference implementations read residuals() and weights(), which a fit
+  # with na.exclude pads: they are given the same fit read with na.omit, which
+  # drops the same rows (rmodel_as_na_omit(), B13); lmtest::bptest() stopped
+  # on a weighted such fit with "incompatible dimensions".
+  reference_model <- rmodel_as_na_omit(model)
+
   compare_results <- function(ours, reference_stat, reference_p) {
     stat_diff <- abs(unname(ours$statistic[[1L]]) - reference_stat)
     p_diff <- abs(ours$p.value - reference_p)
@@ -595,7 +640,7 @@ rvalidate_against_reference <- function(test_name, model, data, tolerance = 1e-6
     if (!requireNamespace("lmtest", quietly = TRUE)) {
       return(list(status = "skipped", message = "Package 'lmtest' not installed."))
     }
-    reference <- lmtest::bptest(model, studentize = FALSE)
+    reference <- lmtest::bptest(reference_model, studentize = FALSE)
     ours <- performBPTest(model, data)
     return(compare_results(ours, unname(reference$statistic), reference$p.value))
   }
@@ -604,7 +649,7 @@ rvalidate_against_reference <- function(test_name, model, data, tolerance = 1e-6
     if (!requireNamespace("lmtest", quietly = TRUE)) {
       return(list(status = "skipped", message = "Package 'lmtest' not installed."))
     }
-    reference <- lmtest::bptest(model, studentize = TRUE)
+    reference <- lmtest::bptest(reference_model, studentize = TRUE)
     # The other two keys call the exported test, which refuses a glm that is
     # not a least-squares fit; this one calls the implementation behind
     # performStudentizedBPTest() and refuses it as that function does, since
@@ -617,7 +662,7 @@ rvalidate_against_reference <- function(test_name, model, data, tolerance = 1e-6
   if (!requireNamespace("car", quietly = TRUE)) {
     return(list(status = "skipped", message = "Package 'car' not installed."))
   }
-  reference <- car::ncvTest(model)
+  reference <- car::ncvTest(reference_model)
   ours <- performWhiteTest(model, data)
   reference_stat <- unname(reference$ChiSq)
   reference_p <- reference$p

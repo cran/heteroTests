@@ -91,9 +91,31 @@ level was 0.083 with the weights held fixed, as every call did before
 estimated again, and 0.045 with the true weights. See the section on
 weighted fits in \code{\link[=performWildBootstrapTest]{performWildBootstrapTest()}}.
 
-Weighted or not, each replicate is refitted with an offset the model was
-given as an argument, \code{lm(..., offset = o)}; an offset written in the
-formula, \code{offset(o)}, is evaluated again from the data of the replicate.
+Weighted or not, each replicate is refitted by least squares on the design
+stored with the fit, in the rows of the replicate, with the weights and the
+total offset of those rows, the \code{offset} argument and the \code{offset()} terms.
+Nothing is evaluated again from the formula or from \code{data}: a term computed
+from the rows it is given, such as \code{cut(x, quantile(x))}, the knots of
+\code{splines::ns()} or \code{I(x > median(x))}, keeps in every replicate the values
+the fit computed, and a variable the formula found outside \code{data}, such as
+\code{offset(o)} with \code{o} in its environment, follows the rows drawn. Under pairs
+resampling, a level of a factor or a value of a character regressor that no
+row drawn holds is left out of the replicate, as a refit of the formula
+leaves it out, and the contrasts of the fit are kept, but for a contrasts
+matrix of such a factor, which gives way to the default contrasts.
+\code{test_function} is given the replicate as an \code{lm}, whose model frame is that
+of the fit in the rows of the replicate with the response of the
+replicate, and the rows of \code{data}, regenerated or drawn. Up to 0.16.0 each
+replicate was refitted from the formula on the rows of \code{data}, and a fit
+whose model frame could not be rebuilt from them so was refused ("\code{data}
+does not reproduce the fit"), as with \code{cut(x, quantile(x))}, a term
+computed from all the rows on a fit that dropped some, or a model that
+transforms a variable given its model frame as \code{data}; so was pairs
+resampling of a model with a variable outside \code{data}. The random numbers
+are drawn as before, in the same order, so a call made after \code{set.seed()}
+returns what it returned wherever the stored design is the design the
+formula rebuilt.
+
 The rows of \code{data} are matched to those of the fit by row name, so that
 each row is regenerated, or drawn, with its own fitted value, weight and
 offset. Rows the model was not fitted to, such as those it dropped for
@@ -101,14 +123,16 @@ missing values, are left out, for the observed statistic as for the
 replicates; the rows that stay keep the order of \code{data}. \code{data} that lacks
 a row the model was fitted to is refused. Data without row names of its
 own, such as a tibble or a data.table, that has as many rows as the fit is
-taken in the order of the fit. The model is then refitted to the rows of
-\code{data}, and \code{data} is refused when that refit does not give the residuals
-of the fit to a relative \code{1e-8}: rows in another order taken by position,
-values that differ from those the model was fitted to, or a variable the
-formula finds outside \code{data}, which keeps the order of the fit. Pairs
-resampling of a model with such a variable, for example \code{offset(o)} with
-\code{o} in the environment of the formula, is refused too; give such an offset
-as an argument instead.
+taken in the order of the fit. The rows are then matched to the
+observations of the fit as the tests match them (see \link{test_results}), and
+data whose rows cannot be shown to hold them are refused, as are values
+that differ from those the model was fitted to. A model whose least-squares
+refit of its design does not give its residuals, such as an \code{lm} fitted with
+a smaller \code{tol} that keeps a column \code{lm()} would alias, is refused too
+("\code{data} does not reproduce the fit"): its replicates would be those of
+another model. Since 0.17.0 a \code{MASS::rlm()} fit, an M-estimate, is refused
+first, as by every test (see \emph{Supported models}); it was refused here
+before, with that message.
 
 Null-imposed resampling additionally requires the response to be a plain
 variable. For \code{log(y) ~ x} the fitted values are on the log scale while
@@ -132,12 +156,19 @@ unreliable, and the bootstrap's, \code{p_value}, is the one to use.
 returns an object with a numeric \code{statistic} element (typically an
 \code{htest} result).}
 
-\item{model}{A fitted model of class \code{lm}, with or without weights. A \code{glm}
-is rejected: each replicate is refitted with least squares, which would
-discard its family and link.}
+\item{model}{A fitted model of class \code{lm}, with or without weights, or,
+since 0.17.0, a \code{glm} with the Gaussian family and the identity link, the
+least-squares fit of \code{lm()} with its prior weights, whose replicates are
+those of that \code{lm}. Another \code{glm} is rejected: each replicate is refitted
+with least squares, which would discard its family and link. A Gaussian
+\code{mgcv::gam()} fit, a \code{glm} by class, is accepted since 0.17.0 when it is
+the least-squares fit of its design, as one whose smooth terms are all
+fixed (\code{s(x, fx = TRUE)}) or one without smooth terms, and its replicates
+are those of the \code{lm()} of that design; one with penalised smooth terms
+is refused, as every \code{gam} was before.}
 
 \item{data}{Data frame used when fitting \code{model}, holding the rows it was
-fitted to under their row names. Other rows are left out. See Details.}
+fitted to, or its model frame. Other rows are left out. See Details.}
 
 \item{B}{Integer, number of bootstrap replications. Defaults to 999. The
 p-value is \verb{(1 + #) / (B_eff + 1)}, so a test at level \code{alpha} is exact
@@ -228,12 +259,28 @@ scheme. The old name still works, returns what it returned and warns.
 }
 
 \section{Supported models}{
-It accepts an \code{lm}, unweighted or with positive weights, a \code{fitWLS()} fit and, since
-0.16.0, a rank-deficient \code{lm}; a replicate whose refit aliases a coefficient the fit estimated,
-as a pairs resample of an interaction can, fails. It refuses every \code{glm}, as each replicate is
-refitted by least squares, a fit with a zero weight, and \code{data} that do not reproduce the fit.
-Which model each test accepts, and why, is set out in \code{\link{test_results}}, under
-\emph{Supported models}.
+It accepts an \code{lm}, unweighted or with positive weights, a \code{fitWLS()} fit,
+since 0.16.0 a rank-deficient \code{lm}, and since 0.17.0 a \code{glm} with the
+Gaussian family and the identity link, weighted or not, bootstrapped as the
+\code{lm} it is; a replicate whose refit aliases a coefficient the fit estimated,
+as a pairs resample of an interaction can, fails. Since 0.17.0 it accepts
+an \code{mgcv::gam()} fit that is the least-squares fit of its design, as one
+whose smooth terms are all fixed (\code{s(x, fx = TRUE)}) or one without smooth
+terms, bootstrapped on that design, the basis of its smooths, as the \code{lm()}
+of it (decision 38 of the design of the model context); it refused every
+\code{gam} before. It refuses a \code{glm} of another family or link and a
+\code{survey::svyglm()} fit, as each replicate is refitted by least squares, an
+\code{mgcv::gam()} fit with penalised smooth terms, which is not the
+least-squares fit of its design, with the class of the refusals of the
+model context since 0.17.0 (decision 37), a fit with a zero weight,
+a \code{MASS::rlm()} fit, an M-estimate, with the message of every test since
+0.17.0 (it was refused before as a fit the least-squares refit does not
+reproduce), a fit whose coefficients, residuals or weights were
+changed after it was fitted (since 0.17.0), a \code{fitWLS()} fit of an
+\code{mgcv::gam()} fit with smooth terms, whose terms do not rebuild the design of
+its coefficients (since 0.17.0), and \code{data} whose rows cannot be
+shown to hold the observations of the fit. Which model each test accepts,
+and why, is set out in \code{\link{test_results}}, under \emph{Supported models}.
 }
 \examples{
 data(mtcars)

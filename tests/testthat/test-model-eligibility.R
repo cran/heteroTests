@@ -214,11 +214,11 @@ test_that("the quantile regression test fits the estimable part of a rank-defici
   )
   a <- performQuantileRegressionTest(s$m, s$d)
   b <- performQuantileRegressionTest(s$reduced, s$d)
-  expect_identical(a$statistic, b$statistic)
+  expect_identical_numbers(a$statistic, b$statistic)
   expect_identical(a$parameter, b$parameter)
-  expect_identical(a$p.value, b$p.value)
+  expect_identical_numbers(a$p.value, b$p.value)
   # The slopes are those of the columns the fit estimated, under their names.
-  expect_identical(a$estimate, b$estimate)
+  expect_identical_numbers(a$estimate, b$estimate)
   expect_identical(rownames(a$estimate), c("x", "z"))
 })
 
@@ -501,7 +501,7 @@ test_that("the four tests give a model with an offset the value of that model", 
     expect_equal(unname(out$statistic), reference$F[2], tolerance = 1e-10, info = k)
     expect_equal(unname(out$parameter), c(reference$Df[2], reference$Res.Df[2]), info = k)
     expect_equal(out$p.value, reference$`Pr(>F)`[2], tolerance = 1e-10, info = k)
-    expect_identical(performRESETTest(f[[k]])$statistic, out$statistic, info = k)
+    expect_identical_numbers(performRESETTest(f[[k]])$statistic, out$statistic, info = k)
   }
   expect_gt(abs(unname(performRESETTest(f$argument)$statistic) -
                   unname(performRESETTest(f$reference)$statistic)), 0.1)
@@ -512,7 +512,7 @@ test_that("the four tests give a model with an offset the value of that model", 
                unname(performBPTestRobust(f$reference, d, studentize = FALSE)$statistic),
                tolerance = 1e-10)
   # An offset that is zero everywhere changes nothing.
-  expect_identical(performRESETTest(f$zero)$statistic, performRESETTest(f$plain)$statistic)
+  expect_identical_numbers(performRESETTest(f$zero)$statistic, performRESETTest(f$plain)$statistic)
   expect_equal(unname(performGQTest(f$zero, d, order_by = "x1")$statistic),
                unname(performGQTest(f$plain, d, order_by = "x1")$statistic), tolerance = 1e-12)
   # Nothing in the package refuses an offset any more.
@@ -772,9 +772,9 @@ test_that("the three tests give a Gaussian glm the value of the lm", {
       b <- eligibility_run(three_glm_tests[[fn]], s$cases[[case]]$glm, s$d)
       info <- paste(fn, "on the", case, "Gaussian glm")
       # The weighted lm is refused by the variance-form test, whose weights
-      # must come from fitWLS(), and the factor by the White streaming test,
-      # whose auxiliary regression holds the squares of its dummies; the glm
-      # is refused with the same message.
+      # must come from fitWLS(); the glm is refused with the same message.
+      # Since 0.17.0 the White streaming test drops the squares of the
+      # dummies of the factor, on which it stopped before.
       if (inherits(a, "refused")) {
         expect_identical(b, a, info = info)
         refused <- refused + 1L
@@ -784,8 +784,8 @@ test_that("the three tests give a Gaussian glm the value of the lm", {
       compared <- compared + 1L
     }
   }
-  expect_identical(compared, 34L)
-  expect_identical(refused, 14L)
+  expect_identical(compared, 36L)
+  expect_identical(refused, 12L)
 })
 
 test_that("the three tests refuse a glm that is not a least-squares fit", {
@@ -899,9 +899,15 @@ test_that("a Gaussian glm gives the value of the lm that decides the rank as it 
     expect_false(isTRUE(all.equal(unname(calls[[name]](fit_lm)$statistic), unname(b$statistic),
                                   tolerance = 1e-6)), info = name)
   }
-  # Its checks warn about the collinear column (VIF > 10).
-  expect_error(suppressWarnings(performWhiteTestStreaming(fit_glm, d, progress = FALSE)),
-               "rank deficient")
+  # White's streaming test decides the rank of its auxiliary regression as
+  # performWhiteTest() does, at the tolerance of qr() on the centred terms,
+  # and drops the terms of the column within that margin, as performWhiteTest()
+  # drops them; up to 0.16.0 it stopped on them ("rank deficient"). Its checks
+  # warn about the collinear column (VIF > 10).
+  streamed <- suppressWarnings(performWhiteTestStreaming(fit_glm, d, progress = FALSE))
+  exact <- suppressWarnings(performWhiteTest(fit_glm, d))
+  expect_identical(unname(streamed$parameter), unname(exact$parameter))
+  expect_equal(unname(streamed$statistic), unname(exact$statistic), tolerance = 1e-8)
 })
 
 # fitWLS() keeps the call of the model it refits, for summary() and update().
@@ -961,7 +967,8 @@ test_that("the R-squared of a Gaussian glm is that of the lm", {
         fit_lm <- eval(bquote(lm(.(f), data = d)))
         fit_glm <- eval(bquote(glm(.(f), data = d)))
       }
-      expect_identical(rleast_squares_r_squared(fit_lm), summary(fit_lm)$r.squared, info = info)
+      expect_identical_numbers(rleast_squares_r_squared(fit_lm), summary(fit_lm)$r.squared,
+                               info = info)
       expect_equal(rleast_squares_r_squared(fit_glm), summary(fit_lm)$r.squared,
                    tolerance = 1e-12, info = info)
     }

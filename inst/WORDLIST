@@ -24,6 +24,7 @@ camelCase
 cancelled
 catalogue
 Cengage
+centre
 centred
 centring
 CESifo
@@ -135,12 +136,14 @@ McCabe
 McCullagh
 memoisation
 memoised
+mgcv's
 Millo
 Mises
 mislabelled
 Misspecification
 misspecification
 MkDocs
+MKL
 modelled
 modelling
 modernised
@@ -269,3 +272,8 @@ xxhash
 Zeileis
 Zenodo
 Zucker
+Helmert
+uncentred
+ungrouped
+preprocessor
+minimise

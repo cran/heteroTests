@@ -19,15 +19,18 @@ performBPTestRobust(
 \item{model}{A fitted \link[stats:lm]{stats::lm} object describing the mean structure whose
 residual variance is to be assessed.}
 
-\item{data}{A \link[base:data.frame]{base::data.frame} (or compatible object) containing the
-variables referenced in \code{model}. The data must include all observations used
-to fit \code{model} and should not contain unresolved missing values.
-When \code{NULL}, the default, the model frame of \code{model} is used. It holds the
-terms of the model rather than its variables (\code{log(x)} rather than \code{x}), so
-a model that transforms a variable needs \code{data}, as does a
-model with an \code{offset()} term, and so may a fit whose \code{weights} or \code{offset}
-argument is a column of the data, which the model frame holds as
-\code{(weights)} or \code{(offset)}.}
+\item{data}{The data frame \code{model} was fitted to, or \code{NULL}, the default.
+The response, design, weights and offset are read from the fit itself, so
+a model that transforms its variables, has an \code{offset()} term, or takes
+its \code{weights} or \code{offset} from a column of the data needs no \code{data}, and
+the model frame of \code{model} is accepted as \code{data} (since 0.17.0; before,
+such models needed \code{data}). Data that are given are matched to the
+observations of the fit: rows with row names of their own by name, in any
+order; rows that only number themselves (a tibble, a data.table, a data
+frame whose row names were reset) by the row numbers of the fit, or in the
+order of the fit when they hold one row per observation. The rows the fit
+dropped may be there or not. Data whose rows cannot be shown to hold the
+observations of the fit are refused; see \link{test_results}.}
 
 \item{studentize}{Logical, use studentized residuals for the auxiliary
 regression (Koenker variant)? Defaults to \code{TRUE}. The name matches
@@ -79,10 +82,16 @@ fit with a zero weight, a coefficient that is not finite for another reason, and
 lack rows or variables of the fit. It accounts for an offset with \code{studentize = FALSE}, and
 since 0.16.0 with \code{studentize = TRUE}, the default, whose refit of the design carries the
 offset of the fit.
-It refuses a multivariate \code{lm} ("needs a model with one response"), and, since 0.16.0, an
-\code{mgcv::gam()} fit with smooth terms: a smooth term is usually penalised, and a penalised fit
-is not the least-squares fit of the design the test fits again. A later step settles which tests
-take such a fit; a \code{gam} without smooth terms is tested as the Gaussian \code{glm} it is.
+It refuses a multivariate \code{lm} ("needs a model with one response"), and, since 0.16.0, with
+\code{studentize = TRUE}, the default, an \code{mgcv::gam()} fit with penalised smooth terms, which
+is not the least-squares fit of its design, the basis of its smooths, that the studentized statistic
+fits again, and, since 0.17.0, such a fit with \code{bootstrap = TRUE}, whose replicates are fitted
+again. With \code{studentize = FALSE} and no bootstrap it tests such a fit on its design, as
+\code{performBPTest()} does. Since 0.17.0 a \code{gam} that is the least-squares fit of its design,
+as one whose smooth terms are all fixed (\code{s(x, fx = TRUE)}), is tested on that design and gives
+the value of the \code{lm()} of it; before, it was refused as a penalised one. A \code{gam} without
+smooth terms is tested as the Gaussian \code{glm} it is (decisions 37 and 38 of the design of the
+model context).
 Which model each test accepts, and why, is set out in
 \code{\link{test_results}}, under \emph{Supported models}.
 }
